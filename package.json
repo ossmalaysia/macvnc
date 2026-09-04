@@ -1,9 +1,21 @@
 {
-  "name": "vnc-client",
+  "name": "macvnc",
   "version": "1.0.0",
-  "description": "From-scratch VNC client for macOS Screen Sharing (RFB 003.889 / Apple auth)",
+  "description": "A free, from-scratch VNC client for macOS Screen Sharing (RFB 003.889 / Apple auth)",
   "main": "src/main/index.js",
   "type": "module",
+  "keywords": [
+    "vnc",
+    "rfb",
+    "macos",
+    "screen-sharing",
+    "remote-desktop",
+    "electron"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jazztong/macvnc.git"
+  },
   "scripts": {
     "start": "electron .",
     "test": "node --test \"test/rfb/*.test.js\""

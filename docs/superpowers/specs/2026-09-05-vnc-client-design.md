@@ -1,7 +1,7 @@
 # VNC Client for macOS Screen Sharing — Design
 
 **Date:** 2026-09-05
-**Target:** Mac mini at `192.168.68.125:5900`, banner `RFB 003.889`
+**Target:** Mac mini at `<your-mac-ip>:5900`, banner `RFB 003.889`
 **Client platform:** Windows 11, Electron + Node 24
 
 ---

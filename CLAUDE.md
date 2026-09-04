@@ -1,62 +1,83 @@
-# context-mode — MANDATORY routing rules
+# CLAUDE.md — project guide for AI agents and contributors
 
-You have context-mode MCP tools available. These rules are NOT optional — they protect your context window from flooding. A single unrouted command can dump 56 KB into context and waste the entire session.
+A from-scratch VNC client (Electron) that connects from Windows/Linux to a Mac
+running built-in Screen Sharing, using Apple's proprietary RFB authentication.
 
-## BLOCKED commands — do NOT attempt these
+## Commands
 
-### curl / wget — BLOCKED
-Any Bash command containing `curl` or `wget` is intercepted and replaced with an error message. Do NOT retry.
-Instead use:
-- `ctx_fetch_and_index(url, source)` to fetch and index web pages
-- `ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
+- `npm start` — launch the Electron app
+- `npm test` — run the unit tests (`node --test`, no network or Electron needed)
+- `npm install` — install deps (Electron + pako)
 
-### Inline HTTP — BLOCKED
-Any Bash command containing `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, or `http.request(` is intercepted and replaced with an error message. Do NOT retry with Bash.
-Instead use:
-- `ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
+## Architecture
 
-### WebFetch — BLOCKED
-WebFetch calls are denied entirely. The URL is extracted and you are told to use `ctx_fetch_and_index` instead.
-Instead use:
-- `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` to query the indexed content
+```
+src/rfb/            Pure protocol core. Runs in Node AND a browser worker.
+  crypto/           Hand-rolled md5, aes-128-ecb, modpow/bigint (no node:crypto)
+  io/               Incremental big-endian Reader (NeedMoreBytes) + Writer
+  protocol/         handshake, Apple DH auth (security type 30), pixel format,
+                    client/server message encode/decode
+  decoders/         raw, copyrect, zlib6, zrle  (encoding registry)
+  inflate/          long-lived zlib streams (pako), one per connection
+  keysym/           DOM key -> X11 keysym, Apple modifier profiles
+  rfb-session.js    the state machine: feed(bytes) -> events, takeOutbound()
+src/main/           Electron main: TCP socket, drives the session, IPC, creds
+src/preload/        contextBridge (CommonJS)
+src/renderer/       connection UI, input capture; worker decodes + returns frames
+test/rfb/           node:test suites over synthetic wire fixtures
+docs/               design spec + the verified byte-level protocol brief
+```
 
-## REDIRECTED tools — use sandbox equivalents
+Data flow: the main process owns the socket and the RFB session (framing only,
+no decode). It ships **compressed** rectangles over a MessagePort to a renderer
+worker, which decodes them and hands finished `ImageBitmap` frames to the main
+renderer thread, which paints the `<canvas>`.
 
-### Bash (>20 lines output)
-Bash is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
-For everything else, use:
-- `ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
-- `ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
+## Hard rules
 
-### Read (for analysis)
-If you are reading a file to **Edit** it → Read is correct (Edit needs content in context).
-If you are reading to **analyze, explore, or summarize** → use `ctx_execute_file(path, language, code)` instead. Only your printed summary enters context. The raw file content stays in the sandbox.
+1. **`src/rfb/**` must stay portable.** No `require('electron')`, no `net`, no
+   `fs`, no `node:crypto`, no Node `zlib`, no `Buffer`. Only `Uint8Array`,
+   `DataView`, `BigInt`, `TextEncoder`/`TextDecoder`. This is what lets the core
+   run in both Node (tests) and the browser worker. `test/rfb/no-electron-import`
+   enforces it — do not weaken it.
 
-### Grep (large results)
-Grep results can flood context. Use `ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
+2. **Read encoding types as signed** (`DataView.getInt32(off, false)`). RFB
+   pseudo-encodings are negative (-224 LastRect, -223 DesktopSize, -239 Cursor);
+   reading them unsigned silently breaks everything two layers away.
 
-## Tool selection hierarchy
+3. **Never log credentials.** Not the password, the DH shared secret, the MD5
+   key, or the credential blob — not even behind a debug flag.
 
-1. **GATHER**: `ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls.
-2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
-3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
-4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
-5. **INDEX**: `ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
+4. **One-outstanding-request pump.** Exactly one FramebufferUpdateRequest in
+   flight, re-armed on `updateDone`, never on a timer. Two in flight desyncs it;
+   zero stalls forever (the server may not send unsolicited updates).
 
-## Subagent routing
+5. **The two inflate streams live for the whole connection and are never reset.**
+   Each rectangle after the first carries no zlib header.
 
-When spawning subagents (Agent/Task tool), the routing block is automatically injected into their prompt. Bash-type subagents are upgraded to general-purpose so they have access to MCP tools. You do NOT need to manually instruct subagents about context-mode.
+## Gotchas worth knowing
 
-## Output constraints
+- The Mac pins its version to `RFB 003.889` and offers only Apple security
+  types (30, 33, 35, 36). We announce `RFB 003.008` anyway, because only 3.8
+  yields a diagnostic reason string on auth failure.
+- Apple's modifier mapping is inverted: `Meta_L` = Option, `Alt_L`/`Super_L` =
+  Command. This is gated on the `RFB 003.889` banner.
+- A transferred OffscreenCanvas does **not** composite from a worker on
+  Electron/Windows (renders black) — that's why frames come back to the main
+  thread as ImageBitmaps instead.
+- We request 16bpp RGB565 pixels (half the bytes). ZRLE is not advertised
+  because its decoder assumes 3-byte CPIXELs; zlib/CopyRect/Raw cover everything.
 
-- Keep responses under 500 words.
-- Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
-- When indexing content, use descriptive source labels so others can `ctx_search(source: "label")` later.
+## Testing philosophy
 
-## ctx commands
+The protocol core is tested against synthetic fixtures built from verified byte
+layouts. The highest-value test feeds each fixture **one byte at a time** and
+asserts the event stream matches feeding it whole — this catches TCP
+segmentation / `NeedMoreBytes` bugs. When you touch framing or a decoder, add or
+extend a fixture rather than mocking.
 
-| Command | Action |
-|---------|--------|
-| `ctx stats` | Call the `ctx_stats` MCP tool and display the full output verbatim |
-| `ctx doctor` | Call the `ctx_doctor` MCP tool, run the returned shell command, display as checklist |
-| `ctx upgrade` | Call the `ctx_upgrade` MCP tool, run the returned shell command, display as checklist |
+## Before publishing changes
+
+- `npm test` must be green.
+- Keep the default host field empty (don't commit a personal LAN IP).
+- Don't commit screenshots that show a real desktop's contents.

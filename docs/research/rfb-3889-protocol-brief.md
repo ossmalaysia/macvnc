@@ -1,12 +1,12 @@
 # RFB 003.889 / Apple Screen Sharing — Verified Protocol Brief
 
 > Generated from a 30-agent research workflow (3.0M tokens, 601 tool calls).
-> Wire facts marked as observed were captured live against 192.168.68.125:5900.
+> Wire facts marked as observed were captured live against <your-mac-ip>:5900.
 > Adversarial verifiers refuted several initially-confident claims; corrections are inline.
 
 ## Apple Security Type 30 — Byte-Exact Auth Flow
 
-APPLE SECURITY TYPE 30 ("ARD / Diffie-Hellman auth") — BYTE-EXACT, as empirically verified end-to-end against 192.168.68.125:5900 (RFB 003.889).
+APPLE SECURITY TYPE 30 ("ARD / Diffie-Hellman auth") — BYTE-EXACT, as empirically verified end-to-end against <your-mac-ip>:5900 (RFB 003.889).
 
 CONTRADICTION RESOLVED FIRST: one research thread claimed modern macOS sends generator=5 and keyLength=0x0200 (512 bytes / 4096-bit MODP Group 16, sourced from a RealVNC binary-patch repo). That is REFUTED for this target by four independent live captures: generator=2, keyLength=0x0080 (128 bytes / 1024-bit), prime byte-for-byte equal to RFC 2409 §6.2 Oakley Group 2 (== Node crypto.getDiffieHellman('modp2').getPrime(), Buffer.compare === 0). Both values MUST still be read from the wire and all buffers sized from keyLength; legacy ARD used 64, a future macOS could use 512. Assert-and-log if generator != 2 or keyLength != 128, do not reject.
 SECOND CONTRADICTION RESOLVED: one adversarial pass asserted type 30 is "offered but not functional" on 003.889 and that type 36 (SRP) is the only working path. That is REFUTED by the live probe: the server consumed all 256 response bytes and returned a well-formed SecurityResult with status=1 plus the reason string "Authentication or authorization failure" — i.e. it parsed and evaluated the credential blob. Only the (deliberately wrong) password failed. Every framing/crypto step is proven. Type 30 is the primary path; 36 = SRP is future work with no public byte spec.
@@ -498,7 +498,7 @@ Tight would need reset() on 4 streams; ZRLE and zlib(6) streams must NEVER be re
 - src/renderer/app.js — DOM, input capture (pointer/keyboard/wheel/clipboard), the pressed-key ledger, focus/blur release-all, ResizeObserver + devicePixelRatio watcher, transferControlToOffscreen, and forwarding the port + canvas to the worker. Overlays are SEPARATE stacked DOM elements, since the canvas can never be drawn to from the main thread again.
 - src/renderer/workers/vnc-worker.js — owns the OffscreenCanvas + WebGL2 context + the framebuffer texture + the CPU shadow buffer; runs the decoders; implements the calibrated (bboxArea - sumArea) < K*(N-1) merge rule; bounded pending-rect queue with a drop counter; rAF tick with a setTimeout fallback; handles resize messages by setting the OffscreenCanvas dimensions itself.
 - test/rfb/*.test.js — node --test (built in; zero dependencies). No Electron, no network, fully synchronous.
-- test/rfb/fixtures/*.bin — REAL captured bytes from 192.168.68.125:5900 in BOTH directions. Capture these FIRST, while you have the Mac mini: the 12-byte banner, the 5-byte security list, the 260-byte type-30 parameter block, a full FramebufferUpdate of each encoding you see, a ServerCutText after copying 'é' and '→'. These are perishable; you cannot unit-test the 003.889 handshake without them.
+- test/rfb/fixtures/*.bin — REAL captured bytes from <your-mac-ip>:5900 in BOTH directions. Capture these FIRST, while you have the Mac mini: the 12-byte banner, the 5-byte security list, the 260-byte type-30 parameter block, a full FramebufferUpdate of each encoding you see, a ServerCutText after copying 'é' and '→'. These are perishable; you cannot unit-test the 003.889 handshake without them.
 - test/harness/fake-server.js — net.createServer replaying a fixture, for integration tests without the hardware.
 - test/rfb/split-feed.test.js — THE HIGHEST-VALUE SINGLE TEST: feed every fixture ONE BYTE AT A TIME and assert the emitted event stream is byte-identical to feeding it whole. This catches nearly every framing and NeedMoreBytes bug in one assertion.
 - test/rfb/no-electron-import.test.js — greps src/rfb/** for 'electron', 'require(\'net\')', 'Buffer', 'zlib' and fails the build on a hit.
