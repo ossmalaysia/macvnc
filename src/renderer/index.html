@@ -1,0 +1,365 @@
+<title>VNC Client</title>
+<meta name="color-scheme" content="dark">
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel: #12171e;
+    --panel-2: #0a0d12;
+    --line: #232b36;
+    --line-hi: #33404f;
+    --text: #dbe2ea;
+    --dim: #8994a3;
+    --accent: #3b82f6;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* ---- top bar ------------------------------------------------------- */
+
+  #bar {
+    flex: none;
+    background: linear-gradient(180deg, #151b23, #10151c);
+    border-bottom: 1px solid var(--line);
+  }
+
+  #conn {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 7px 10px 8px;
+    flex-wrap: wrap;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+  .field label {
+    font-size: 9px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 600;
+  }
+
+  input, select, button {
+    font: inherit;
+    color: inherit;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 7px;
+    height: 26px;
+    outline: none;
+  }
+
+  input { min-width: 0; }
+
+  input:focus, select:focus, button:focus-visible {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, .22);
+  }
+
+  input::placeholder { color: #56606d; }
+
+  #host { width: 168px; font-family: var(--mono); }
+  #port { width: 62px; font-family: var(--mono); }
+  #username { width: 130px; }
+  #password { width: 130px; }
+  #keyprofile { width: 120px; cursor: pointer; }
+
+  .spacer { flex: 1 1 auto; }
+
+  button {
+    cursor: pointer;
+    padding: 4px 13px;
+    font-weight: 600;
+    background: #1b2431;
+    border-color: var(--line-hi);
+  }
+
+  button:hover:not(:disabled) { background: #22303f; }
+  button:disabled { opacity: .4; cursor: default; }
+  button#connect { background: var(--accent); border-color: #2f6fd0; color: #fff; }
+  button#connect:hover:not(:disabled) { background: #4b8ef8; }
+
+  /* ---- status line ---------------------------------------------------- */
+
+  #statusline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px 5px;
+    border-top: 1px solid #1a212b;
+    background: #0d1219;
+    font-size: 11px;
+    min-height: 24px;
+  }
+
+  #dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex: none;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, .04);
+  }
+
+  body[data-phase="connecting"] #dot { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+  body[data-phase="connected"]  #dot { background: var(--ok); }
+  body[data-phase="error"]      #dot { background: var(--err); }
+
+  @keyframes pulse { 50% { opacity: .28; } }
+
+  #state { font-weight: 600; letter-spacing: .02em; flex: none; }
+  body[data-phase="connected"] #state { color: var(--ok); }
+  body[data-phase="error"] #state { color: var(--err); }
+
+  #detail {
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    user-select: text;
+  }
+
+  body[data-phase="error"] #detail { color: var(--err); }
+
+  #meta {
+    flex: none;
+    display: flex;
+    gap: 10px;
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  /* ---- stage ----------------------------------------------------------- */
+
+  #stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #000;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+
+  #stage.bell { animation: bell .18s ease-out 2; }
+  @keyframes bell { 50% { box-shadow: inset 0 0 0 3px var(--warn); } }
+
+  #screen {
+    display: block;
+    width: 0;
+    height: 0;
+    background: #000;
+    touch-action: none;
+    outline: none;
+  }
+
+  /* Overlays are separate stacked DOM elements: after
+     transferControlToOffscreen the main thread can never draw on the canvas. */
+  #overlay {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgba(6, 9, 13, .86);
+    padding: 24px;
+  }
+
+  /* Hide the overlay when connected, OR whenever a live framebuffer exists.
+     Keying this solely on the phase attribute was fragile: layout() runs before
+     setPhase('connected'), so an 86%-opaque overlay could sit on top of a
+     perfectly good picture. Errors and disconnects still show through. */
+  body[data-phase="connected"] #overlay,
+  body.has-screen:not([data-phase="error"]):not([data-phase="disconnected"]):not([data-phase="idle"]) #overlay {
+    display: none;
+  }
+
+  #card {
+    width: min(560px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px 18px 18px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+  }
+
+  #card h1 { margin: 0 0 4px; font-size: 13px; letter-spacing: .02em; }
+
+  #cardnote { margin: 0; color: var(--dim); font-size: 11.5px; }
+
+  #errtext {
+    display: none;
+    margin: 12px 0 0;
+    padding: 9px 11px;
+    max-height: 34vh;
+    overflow: auto;
+    background: #12080a;
+    border: 1px solid #3a1d20;
+    border-left: 2px solid var(--err);
+    border-radius: 4px;
+    color: #ffb4b4;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+
+  #errtext.show { display: block; }
+
+  #hints {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+    color: #6f7b8a;
+    font-size: 11px;
+    display: grid;
+    gap: 2px;
+  }
+
+  kbd {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    background: #1a212b;
+    border: 1px solid var(--line-hi);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    padding: 0 4px;
+    color: #b9c4d1;
+  }
+
+  /* remote clipboard fallback panel */
+  #clip {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: min(380px, calc(100% - 24px));
+    background: var(--panel);
+    border: 1px solid var(--line-hi);
+    border-radius: 6px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, .6);
+    padding: 9px 10px 10px;
+  }
+
+  #clip[hidden] { display: none; }
+
+  #cliphead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  #cliphead span {
+    font-size: 9px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 600;
+  }
+
+  #clipclose { height: 20px; padding: 0 7px; font-size: 11px; }
+
+  #cliptext {
+    margin: 0;
+    max-height: 130px;
+    overflow: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: #c8d2de;
+    white-space: pre-wrap;
+    word-break: break-word;
+    user-select: text;
+  }
+</style>
+
+<header id="bar">
+  <form id="conn" autocomplete="off">
+    <div class="field">
+      <label for="host">Host</label>
+      <input id="host" name="host" value="192.168.68.125" spellcheck="false" autocapitalize="off">
+    </div>
+    <div class="field">
+      <label for="port">Port</label>
+      <input id="port" name="port" value="5900" inputmode="numeric" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" spellcheck="false" autocapitalize="off">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password">
+    </div>
+    <div class="field">
+      <label for="keyprofile">Modifiers</label>
+      <select id="keyprofile">
+        <option value="ctrl-as-cmd">Ctrl as Cmd</option>
+        <option value="native">Native</option>
+      </select>
+    </div>
+    <button id="connect" type="submit">Connect</button>
+    <button id="disconnect" type="button" disabled>Disconnect</button>
+    <div class="spacer"></div>
+  </form>
+
+  <div id="statusline">
+    <span id="dot"></span>
+    <span id="state">Idle</span>
+    <span id="detail"></span>
+    <span id="meta">
+      <span id="res"></span>
+      <span id="fps"></span>
+    </span>
+  </div>
+</header>
+
+<main id="stage">
+  <canvas id="screen" tabindex="0"></canvas>
+
+  <div id="overlay">
+    <div id="card">
+      <h1 id="cardtitle">Not connected</h1>
+      <p id="cardnote">Enter the host and credentials above, then press Connect.</p>
+      <pre id="errtext"></pre>
+      <ul id="hints">
+        <li>Keyboard and pointer are captured while connected; click the screen to focus it.</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> sends the local clipboard to the remote machine.</li>
+        <li>Every other keystroke, including <kbd>Tab</kbd> and the arrows, goes to the remote machine.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div id="clip" hidden>
+    <div id="cliphead">
+      <span>Remote clipboard</span>
+      <button id="clipclose" type="button">Dismiss</button>
+    </div>
+    <p id="cliptext"></p>
+  </div>
+</main>
+
+<script type="module" src="./app.js"></script>
