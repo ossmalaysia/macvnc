@@ -26,6 +26,9 @@ const passEl = document.getElementById('password');
 const profileEl = document.getElementById('keyprofile');
 const connectBtn = document.getElementById('connect');
 const disconnectBtn = document.getElementById('disconnect');
+const rememberEl = document.getElementById('remember');
+const autoconnectEl = document.getElementById('autoconnect');
+const forgetBtn = document.getElementById('forget');
 
 const stateEl = document.getElementById('state');
 const detailEl = document.getElementById('detail');
@@ -264,8 +267,7 @@ function applyStatus(kind, message) {
 
 // ------------------------------------------------------------- connect ----
 
-form.addEventListener('submit', async (ev) => {
-  ev.preventDefault();
+async function doConnect() {
   if (state.phase === 'connecting' || state.phase === 'connected') return;
 
   const host = hostEl.value.trim();
@@ -277,6 +279,18 @@ form.addEventListener('submit', async (ev) => {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     setPhase('error', `Invalid port: ${portEl.value}`);
     return;
+  }
+
+  // Persist before connecting, so a saved profile survives even a failed attempt.
+  if (rememberEl.checked && window.vnc.saveCreds) {
+    window.vnc.saveCreds({
+      host,
+      port,
+      username: userEl.value,
+      password: passEl.value,
+      profile: currentProfile(),
+      autoConnect: autoconnectEl.checked,
+    });
   }
 
   setPhase('connecting', `Connecting to ${host}:${port}`);
@@ -296,7 +310,34 @@ form.addEventListener('submit', async (ev) => {
   } catch (err) {
     setPhase('error', errorMessage(err));
   }
+}
+
+form.addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  doConnect();
 });
+
+forgetBtn.addEventListener('click', async () => {
+  if (window.vnc && window.vnc.clearCreds) await window.vnc.clearCreds();
+  rememberEl.checked = false;
+  autoconnectEl.checked = false;
+  passEl.value = '';
+});
+
+// Prefill from the saved profile on launch, and auto-connect if asked.
+(async () => {
+  if (!window.vnc || !window.vnc.loadCreds) return;
+  const c = await window.vnc.loadCreds();
+  if (!c) return;
+  if (c.host) hostEl.value = c.host;
+  if (c.port) portEl.value = c.port;
+  if (c.username) userEl.value = c.username;
+  if (c.password) passEl.value = c.password;
+  if (c.profile) profileEl.value = c.profile;
+  rememberEl.checked = true;
+  autoconnectEl.checked = !!c.autoConnect;
+  if (c.autoConnect && c.host) doConnect();
+})();
 
 disconnectBtn.addEventListener('click', () => {
   releaseEverything();

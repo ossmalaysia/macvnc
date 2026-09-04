@@ -122,24 +122,24 @@ test('writePixelFormat emits the exact 16 bytes for CANVAS_PIXEL_FORMAT', () => 
   assert.deepEqual(
     Array.from(b),
     [
-      32, // bits-per-pixel
-      24, // depth is 24, NOT 32 -- the 4th byte is padding, never alpha
+      16, // bits-per-pixel = 16 (RGB565)
+      16, // depth
       0, // bigEndian
       1, // trueColour
-      0, 255, // redMax   u16 BE
-      0, 255, // greenMax
-      0, 255, // blueMax
-      0, // redShift
-      8, // greenShift
-      16, // blueShift
+      0, 31, // redMax   u16 BE (5 bits)
+      0, 63, // greenMax        (6 bits)
+      0, 31, // blueMax         (5 bits)
+      11, // redShift
+      5, // greenShift
+      0, // blueShift
       0, 0, 0, // padding
     ],
   );
-  assert.equal(CANVAS_PIXEL_FORMAT.depth, 24);
-  assert.equal(CANVAS_PIXEL_FORMAT.redShift, 0);
-  assert.equal(CANVAS_PIXEL_FORMAT.greenShift, 8);
-  assert.equal(CANVAS_PIXEL_FORMAT.blueShift, 16);
-  assert.equal(bytesPerPixel(CANVAS_PIXEL_FORMAT), 4);
+  assert.equal(CANVAS_PIXEL_FORMAT.depth, 16);
+  assert.equal(CANVAS_PIXEL_FORMAT.redShift, 11);
+  assert.equal(CANVAS_PIXEL_FORMAT.greenShift, 5);
+  assert.equal(CANVAS_PIXEL_FORMAT.blueShift, 0);
+  assert.equal(bytesPerPixel(CANVAS_PIXEL_FORMAT), 2);
 });
 
 test('readPixelFormat round-trips writePixelFormat', () => {
@@ -162,7 +162,7 @@ test('setPixelFormat is exactly 20 bytes: type, 3 pad, 16 format', () => {
   assert.equal(b.length, 20);
   assert.deepEqual(
     Array.from(b),
-    [0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0],
+    [0, 0, 0, 0, 16, 16, 0, 1, 0, 31, 0, 63, 0, 31, 11, 5, 0, 0, 0, 0],
   );
   assert.deepEqual(Array.from(setPixelFormat()), Array.from(b), 'defaults to CANVAS_PIXEL_FORMAT');
 });
@@ -406,7 +406,8 @@ const EXPECTED_DH_RESPONSE = buildAppleDhResponse(
 );
 
 const rawRect = (x, y, w, h, fill) => {
-  const pixels = new Uint8Array(w * h * 4);
+  // Raw payload length follows the requested pixel format (now 16bpp = 2 bytes).
+  const pixels = new Uint8Array(w * h * bytesPerPixel(CANVAS_PIXEL_FORMAT));
   pixels.fill(fill);
   return cat(u16be(x), u16be(y), u16be(w), u16be(h), i32be(0), pixels);
 };
@@ -544,7 +545,7 @@ test('a Bell between two FramebufferUpdates does not desync the stream', () => {
   const raw = events[0];
   assert.equal(raw.encoding, 0);
   assert.deepEqual([raw.x, raw.y, raw.w, raw.h], [0, 0, 2, 2]);
-  assert.equal(raw.payload.length, 2 * 2 * 4, 'w * h * bytesPerPixel');
+  assert.equal(raw.payload.length, 2 * 2 * bytesPerPixel(CANVAS_PIXEL_FORMAT), 'w * h * bytesPerPixel');
   assert.ok(raw.payload.every((b) => b === 0xab));
 
   const zl = events[3];

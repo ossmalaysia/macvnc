@@ -7,7 +7,28 @@ import { decode as decodeCopyRect } from '../../src/rfb/decoders/copyrect.js';
 import { decode as decodeZlib6 } from '../../src/rfb/decoders/zlib6.js';
 import { decode as decodeZrle } from '../../src/rfb/decoders/zrle.js';
 import { createInflateContext } from '../../src/rfb/inflate/streams.js';
-import { CANVAS_PIXEL_FORMAT as PF } from '../../src/rfb/protocol/pixel-format.js';
+// Decoder tests exercise the 32bpp path (Raw slow path, zlib, ZRLE 3-byte
+// CPIXELs). CANVAS_PIXEL_FORMAT is now 16bpp RGB565, so use the retained 32bpp.
+import { RGBX_PIXEL_FORMAT as PF, CANVAS_PIXEL_FORMAT } from '../../src/rfb/protocol/pixel-format.js';
+
+test('raw: RGB565 (the requested format) expands to correct RGBA', () => {
+  // Pixels chosen so 5/6/5-bit channels round-trip exactly under bit-replication.
+  // 0xF800 = pure red, 0x07E0 = pure green, 0x001F = pure blue, 0xFFFF = white.
+  const px = [0xf800, 0x07e0, 0x001f, 0xffff];
+  const payload = new Uint8Array(px.length * 2);
+  px.forEach((v, i) => {
+    payload[i * 2] = v & 0xff; // little-endian
+    payload[i * 2 + 1] = v >> 8;
+  });
+  const fb = new Uint8ClampedArray(4 * 1 * 4);
+  decodeRaw(payload, { x: 0, y: 0, w: 4, h: 1 }, CANVAS_PIXEL_FORMAT, fb, 4, 1);
+  assert.deepEqual(Array.from(fb), [
+    255, 0, 0, 255, // red
+    0, 255, 0, 255, // green
+    0, 0, 255, 255, // blue
+    255, 255, 255, 255, // white
+  ]);
+});
 
 // ---------------------------------------------------------------------------
 // helpers

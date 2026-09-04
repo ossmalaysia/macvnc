@@ -48,6 +48,8 @@
   }
 
   .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .chk { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--dim); white-space: nowrap; cursor: pointer; }
+  .chk input { margin: 0; }
 
   .field label {
     font-size: 9px;
@@ -321,8 +323,15 @@
         <option value="native">Native</option>
       </select>
     </div>
+    <label class="chk" title="Store host, username and (encrypted) password on this machine">
+      <input id="remember" type="checkbox"> Remember
+    </label>
+    <label class="chk" title="Connect automatically when the app launches">
+      <input id="autoconnect" type="checkbox"> Auto-connect
+    </label>
     <button id="connect" type="submit">Connect</button>
     <button id="disconnect" type="button" disabled>Disconnect</button>
+    <button id="forget" type="button" title="Delete saved credentials">Forget</button>
     <div class="spacer"></div>
   </form>
 

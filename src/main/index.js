@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, MessageChannelMain } from 'electron';
+import { app, BrowserWindow, ipcMain, MessageChannelMain, safeStorage } from 'electron';
 import net from 'node:net';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { randomFillSync } from 'node:crypto';
 import { RfbSession } from '../rfb/rfb-session.js';
@@ -8,8 +9,11 @@ import { RfbSession } from '../rfb/rfb-session.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 5900;
-// Preferred first. -223 DesktopSize / -224 LastRect are pseudo-encodings.
-const DEFAULT_ENCODINGS = [16, 6, 1, 0, -223, -224];
+// We request a 16bpp RGB565 pixel format (half the bytes of 32bpp). ZRLE is
+// dropped because its decoder is written for 3-byte CPIXELs; zlib(6), CopyRect
+// and Raw all handle 16bpp and cover everything Apple sends.
+// -223 DesktopSize / -224 LastRect are pseudo-encodings.
+const DEFAULT_ENCODINGS = [6, 1, 0, -223, -224];
 
 const ECONNREFUSED_HELP =
   'no VNC server listening - if the Mac just rebooted with FileVault on, ' +
@@ -116,9 +120,7 @@ function closePort() {
 function flushOutbound() {
   if (!session || !socket || socket.destroyed) return;
   const out = session.takeOutbound();
-  if (out && out.length) {
-    socket.write(out);
-  }
+  if (out && out.length) socket.write(out);
 }
 
 function forwardRect(ev) {
@@ -300,6 +302,64 @@ ipcMain.handle('vnc:connect', (_event, opts) => {
       settle({ ok: false, error: 'connection closed before handshake' });
     });
   });
+});
+
+// ---------------------------------------------------------------- credentials
+// Saved to userData, with the password encrypted at rest via the OS keychain
+// (safeStorage -> Windows DPAPI, tied to this OS account). The rest is plain so
+// the form can prefill even when encryption is briefly unavailable.
+
+function credsPath() {
+  return path.join(app.getPath('userData'), 'vnc-creds.json');
+}
+
+ipcMain.handle('creds:load', () => {
+  try {
+    const raw = fs.readFileSync(credsPath(), 'utf8');
+    const rec = JSON.parse(raw);
+    let password = '';
+    if (rec.enc && safeStorage.isEncryptionAvailable()) {
+      password = safeStorage.decryptString(Buffer.from(rec.enc, 'base64'));
+    }
+    return {
+      host: rec.host || '',
+      port: rec.port || DEFAULT_PORT,
+      username: rec.username || '',
+      password,
+      profile: rec.profile || '',
+      autoConnect: !!rec.autoConnect,
+    };
+  } catch {
+    return null; // no saved creds yet, or unreadable
+  }
+});
+
+ipcMain.handle('creds:save', (_event, c) => {
+  try {
+    const rec = {
+      host: c.host || '',
+      port: Number(c.port) || DEFAULT_PORT,
+      username: c.username || '',
+      profile: c.profile || '',
+      autoConnect: !!c.autoConnect,
+    };
+    if (c.password && safeStorage.isEncryptionAvailable()) {
+      rec.enc = safeStorage.encryptString(String(c.password)).toString('base64');
+    }
+    fs.writeFileSync(credsPath(), JSON.stringify(rec), { mode: 0o600 });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('creds:clear', () => {
+  try {
+    fs.rmSync(credsPath(), { force: true });
+  } catch {
+    /* nothing to clear */
+  }
+  return { ok: true };
 });
 
 ipcMain.handle('vnc:toggleFullscreen', () => {

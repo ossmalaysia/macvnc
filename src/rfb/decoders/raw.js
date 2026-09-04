@@ -86,6 +86,33 @@ export function decode(payload, rect, pf, fb, fbW, fbH, ctx) {
     return;
   }
 
+  // Fast path: RGB565 little-endian (our requested format). Expand 5/6/5-bit
+  // channels to 8-bit by bit-replication - no division, no Math.round.
+  const fast565 =
+    bpp === 2 && !bigEndian &&
+    redShift === 11 && greenShift === 5 && blueShift === 0 &&
+    redMax === 31 && greenMax === 63 && blueMax === 31;
+
+  if (fast565) {
+    for (let y = y0; y < y1; y++) {
+      let si = (y - ry) * srcStride + (x0 - rx) * 2;
+      let di = (y * fbW + x0) * 4;
+      for (let x = x0; x < x1; x++) {
+        const v = payload[si] | (payload[si + 1] << 8);
+        const r5 = (v >> 11) & 0x1f;
+        const g6 = (v >> 5) & 0x3f;
+        const b5 = v & 0x1f;
+        fb[di] = (r5 << 3) | (r5 >> 2);
+        fb[di + 1] = (g6 << 2) | (g6 >> 4);
+        fb[di + 2] = (b5 << 3) | (b5 >> 2);
+        fb[di + 3] = 255;
+        si += 2;
+        di += 4;
+      }
+    }
+    return;
+  }
+
   for (let y = y0; y < y1; y++) {
     let si = (y - ry) * srcStride + (x0 - rx) * bpp;
     let di = (y * fbW + x0) * 4;

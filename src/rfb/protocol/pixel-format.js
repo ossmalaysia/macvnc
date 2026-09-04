@@ -3,11 +3,33 @@
  */
 
 /**
- * The format we ask every server for: 32bpp little-endian with the channels
- * already laid out as [R,G,B,X] on the wire, which is what a canvas RGBA buffer
- * wants. depth is 24 (not 32) — the 4th byte is undefined padding, never alpha.
+ * The format we ask every server for: 16bpp RGB565, little-endian. Half the
+ * bytes of 32bpp, so the Mac encodes and ships each frame in roughly half the
+ * time on a LAN — the same win Apple's own client gets from its 0x3ea "High"
+ * encoding, reached here through the documented SetPixelFormat path.
+ *   red   = bits 11..15 (5 bits, max 31)
+ *   green = bits  5..10 (6 bits, max 63)
+ *   blue  = bits  0..4  (5 bits, max 31)
+ * The raw decoder expands each 2-byte pixel back to RGBA for the canvas.
  */
 export const CANVAS_PIXEL_FORMAT = {
+  bitsPerPixel: 16,
+  depth: 16,
+  bigEndian: 0,
+  trueColour: 1,
+  redMax: 31,
+  greenMax: 63,
+  blueMax: 31,
+  redShift: 11,
+  greenShift: 5,
+  blueShift: 0,
+};
+
+/**
+ * The previous 32bpp true-colour format. Kept for the ZRLE decoder and its
+ * tests, which are written against 3-byte CPIXELs; ZRLE is no longer advertised.
+ */
+export const RGBX_PIXEL_FORMAT = {
   bitsPerPixel: 32,
   depth: 24,
   bigEndian: 0,
