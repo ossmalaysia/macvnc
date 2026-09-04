@@ -72,6 +72,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Keep decoding/painting at full rate even when the window isn't the
+      // foreground app - otherwise Chromium throttles rAF/timers toward ~1fps.
+      backgroundThrottling: false,
     },
   });
 
