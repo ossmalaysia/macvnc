@@ -88,6 +88,18 @@ parser. This is JavaScript, so the failure mode is an exception or bad pixels ra
 than memory corruption — but a malicious or compromised server could still cause a
 denial of service.
 
+### Released binaries are unsigned
+Installers published to GitHub Releases are built by CI (`.github/workflows/release.yml`)
+and are **not code-signed** — no certificate is configured. Consequences:
+
+- Windows SmartScreen and macOS Gatekeeper will warn, and users must explicitly
+  override to run the app. That override is a real trust decision.
+- An unsigned binary cannot be cryptographically attributed to this repository.
+  If you need stronger assurance, **build from source** (`npm install && npm run dist:win`)
+  — the build is reproducible from a public commit and requires trusting no binary.
+- Releases are built on GitHub-hosted runners from the tagged commit, so the build
+  provenance is at least publicly auditable via the Actions log.
+
 ## Dependency and supply-chain posture
 
 - **Runtime dependencies: one** — [`pako`](https://github.com/nodeca/pako) (DEFLATE).

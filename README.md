@@ -34,11 +34,37 @@ The result is free remote access to your own Mac, owned entirely by you — no a
 
 ## Requirements
 
-- **Node.js 20+** on the client machine (developed on Node 24)
-- A **Mac** with Screen Sharing enabled
-- The two machines on the same network
+- A **Windows, Linux or macOS** machine to run the client on
+- A **Mac** with Screen Sharing enabled (see below)
+- Both machines on the same network
+- *Only if running from source:* **Node.js 20+** (developed on Node 24)
 
-## Quick start
+## Install
+
+### Option 1 — download an installer (no tools needed)
+
+Grab the file for your platform from the
+**[latest release](https://github.com/jazztong/macvnc/releases/latest)**:
+
+| Platform | File | Notes |
+|---|---|---|
+| **Windows** | `macvnc Setup <version>.exe` | Normal installer |
+| **Windows** | `macvnc <version>.exe` | Portable — just run it, nothing installed |
+| **Linux** | `macvnc-<version>.AppImage` | `chmod +x` then run |
+| **macOS** | `macvnc-<version>.dmg` | Open and drag to Applications |
+
+> ⚠️ **These builds are unsigned** — there's no paid code-signing certificate behind
+> this project. Your OS will warn you:
+> - **Windows:** "Windows protected your PC" → **More info** → **Run anyway**
+> - **macOS:** right-click the app → **Open** (instead of double-clicking)
+>
+> That warning is expected for unsigned open-source software. Only bypass it because
+> you trust this source — or build from source yourself (Option 2), which needs no
+> such trust.
+
+### Option 2 — run from source
+
+Needs [Node.js](https://nodejs.org) 20+ and git.
 
 ```bash
 git clone https://github.com/jazztong/macvnc.git
@@ -46,6 +72,9 @@ cd macvnc
 npm install
 npm start
 ```
+
+To build your own installer: `npm run dist:win` (or `dist:linux` / `dist:mac`).
+Output lands in `dist/`.
 
 ## Enable Screen Sharing on the Mac
 

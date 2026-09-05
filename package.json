@@ -18,13 +18,64 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test \"test/rfb/*.test.js\""
+    "test": "node --test \"test/rfb/*.test.js\"",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac"
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^44.2.0"
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "pako": "^2.1.0"
+  },
+  "build": {
+    "appId": "com.jazztong.macvnc",
+    "productName": "macvnc",
+    "copyright": "Copyright (c) 2026 Jazz Tong",
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.md"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities"
+    }
   }
 }

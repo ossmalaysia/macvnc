@@ -1,0 +1,85 @@
+name: Release
+
+# Publish installers when a version tag is pushed, e.g.:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the GitHub Release and upload assets
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: dist:win
+            artifacts: 'dist/*.exe'
+          - os: ubuntu-latest
+            script: dist:linux
+            artifacts: 'dist/*.AppImage'
+          - os: macos-latest
+            script: dist:mac
+            artifacts: 'dist/*.dmg'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm test
+      # Builds are UNSIGNED: no code-signing certificate is configured. Users will
+      # see SmartScreen (Windows) / Gatekeeper (macOS) warnings. Documented in README.
+      - run: npm run ${{ matrix.script }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macvnc-${{ matrix.os }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            Download the file for your platform below.
+
+            | Platform | File |
+            |---|---|
+            | Windows (installer) | `macvnc Setup <version>.exe` |
+            | Windows (portable, no install) | `macvnc <version>.exe` |
+            | Linux | `macvnc-<version>.AppImage` |
+            | macOS | `macvnc-<version>.dmg` |
+
+            > **These builds are unsigned.** Windows SmartScreen will show
+            > "Windows protected your PC" — click **More info -> Run anyway**.
+            > macOS Gatekeeper will block it — right-click the app -> **Open**.
+            > Only do this because you trust this source; verify the checksums if unsure.
+
+            Then enter your Mac's IP, your macOS account name and password.
+            Screen Sharing must be enabled on the Mac
+            (System Settings -> General -> Sharing -> Screen Sharing).
+
+            See the [README](https://github.com/jazztong/macvnc#readme) for setup and
+            [SECURITY.md](https://github.com/jazztong/macvnc/blob/main/SECURITY.md)
+            for the threat model and known limitations.
