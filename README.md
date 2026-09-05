@@ -88,11 +88,35 @@ The interesting parts:
 
 For the full byte-level details — including the Apple type-30 auth handshake and a ranked list of the traps a from-scratch RFB client falls into — see [`docs/research/rfb-3889-protocol-brief.md`](docs/research/rfb-3889-protocol-brief.md).
 
-## Performance and limitations
+## Design decisions and optimizations
 
-This is honest about its ceiling. Standard VNC is **demand-driven**: the client asks, the Mac sends one frame, repeat — one frame per network round trip. Commercial tools like TeamViewer feel smoother because they run their own agent on the Mac that captures and H.264-streams the screen continuously; they don't use Screen Sharing at all.
+Each of these was chosen deliberately and, where it affects latency, measured against a live Mac:
 
-So: this is tuned about as far as the Screen Sharing protocol allows (zlib encoding, RGB565, no render throttling), and on a LAN it's very usable for real work — but a full-screen video or a fast drag of a large window will show the protocol's limits. That's structural, not a bug.
+| Decision | Why |
+|---|---|
+| **Portable protocol core** (`src/rfb/` uses no Node/Electron APIs) | Runs identically in Node (fast, headless unit tests) and in the browser worker. A test greps the tree to enforce it. |
+| **Decode in a worker, ship compressed rectangles** | Only compressed bytes cross the process boundary, so internal bandwidth = network bandwidth, not the size of a decoded frame (~8 MB at 1440p). |
+| **Frames returned as `ImageBitmap`, painted on the main thread** | A transferred `OffscreenCanvas` renders black from a worker on some Electron/GPU combos; handing back an `ImageBitmap` composites reliably and is a zero-copy transfer. |
+| **zlib encoding preferred over ZRLE** | On a LAN the Mac encodes zlib far faster. Measured server response per frame dropped from **137–620 ms (ZRLE) to 9–76 ms (zlib)**. Bandwidth isn't the constraint on a LAN; the Mac's encode time is. |
+| **16-bit RGB565 pixels instead of 32-bit** | Halves the bytes the Mac encodes and ships per frame — the same win Apple's own client gets from its `0x3ea` "High" encoding, reached here through the standard `SetPixelFormat` path. |
+| **CopyRect kept high-priority** | Lets the Mac say "move this region" instead of re-encoding it — cheap window drags. |
+| **One-outstanding-request pump, no render throttling** | Exactly one frame request in flight (never a timer); `backgroundThrottling: false` keeps decoding at full rate when the window isn't foreground. |
+
+The net effect: on a LAN this is tuned about as far as **standard** Screen Sharing allows, and it's very usable for real work.
+
+## Limitations, and a better approach
+
+Be clear about the ceiling. Standard VNC is **demand-driven**: the client asks, the Mac sends one frame, repeat — one frame per network round trip. And the standard-RFB tricks that make clients like [TurboVNC](https://github.com/TurboVNC/turbovnc) fast (Tight + JPEG, adaptive quality) **don't help against a Mac** — Apple's `screensharingd` only sends Raw / CopyRect / zlib / ZRLE, never Tight. So a full-screen video or a fast drag of a large window will show the protocol's limits. That's structural, not a bug.
+
+**The real path to commercial-tool smoothness is a different protocol.** Apple's own *High Performance* Screen Sharing doesn't send rectangles at all — it streams **HEVC (H.265) 4:4:4 video over UDP/SRTP**, hardware-decoded, with no per-frame round trip. That's why Apple's Screen Sharing.app and tools like TeamViewer feel smoother. Implementing it is a large undertaking (UDP, SRTP encryption, HEVC decode) and Apple's native mode requires Apple Silicon + macOS Sonoma on both ends — but it has been reverse-engineered (see [iShareScreen](https://github.com/renegadelink/iShareScreen)), so it's a viable future direction rather than a dead end. Contributions welcome.
+
+## Related projects and prior art
+
+- **[iShareScreen](https://github.com/renegadelink/iShareScreen)** — cross-platform Python client for Apple's *High Performance* mode (HEVC over UDP/SRTP). The reference for the low-latency path described above.
+- **[RoyalVNC](https://github.com/royalapplications/royalvnc)** — a modern, high-performance RFB implementation in Swift.
+- **[vvncc](https://github.com/Eden-Sun/vvncc)** — iPad/iPhone VNC client for macOS Screen Sharing (Swift RFB core, Metal dirty-rect rendering).
+- **[TigerVNC](https://github.com/TigerVNC/tigervnc)** / **[TurboVNC](https://github.com/TurboVNC/turbovnc)** — high-performance general-purpose VNC (Tight + JPEG); great references, though their speed tricks target non-Apple servers.
+- **[noVNC](https://github.com/novnc/noVNC)** — the canonical JavaScript RFB client; invaluable for decoder and keysym reference.
 
 ## Development
 
