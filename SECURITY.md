@@ -7,7 +7,7 @@ do not have a separate maintenance commitment.
 
 ## Report a vulnerability privately
 
-Use [GitHub private vulnerability reporting](https://github.com/ossbusinessmy/macvnc/security/advisories/new)
+Use [GitHub private vulnerability reporting](https://github.com/ossmalaysia/macvnc/security/advisories/new)
 when available. Do not put passwords, keys, saved profiles, private hostnames,
 desktop captures or exploitable vulnerability details in a public issue. If
 private reporting is unavailable, open a public issue requesting a private
