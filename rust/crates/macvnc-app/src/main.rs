@@ -226,7 +226,17 @@ impl App {
             self.release_input();
             return;
         }
-        let next = input::modifiers(ctx.input(|i| i.modifiers), self.profile.profile == "native");
+        let events = ctx.input(|i| i.events.clone());
+        // On some Windows backends the frame-level modifier snapshot can lag
+        // one frame behind a physical Ctrl press. Prefer the modifier state
+        // attached to the key event when it is available.
+        let frame_modifiers = ctx.input(|i| i.modifiers);
+        let event_modifiers = events.iter().rev().find_map(|event| match event {
+            egui::Event::Key { modifiers, .. } => Some(*modifiers),
+            _ => None,
+        });
+        let modifiers = event_modifiers.unwrap_or(frame_modifiers);
+        let next = input::modifiers(modifiers, self.profile.profile == "native");
         for keysym in &self.modifiers {
             if !next.contains(keysym) {
                 self.send(Command::Key {
@@ -244,7 +254,6 @@ impl App {
             }
         }
         self.modifiers = next;
-        let events = ctx.input(|i| i.events.clone());
         let composed_text = events
             .iter()
             .any(|event| matches!(event, egui::Event::Text(text) if !text.is_ascii()));
