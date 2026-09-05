@@ -135,9 +135,7 @@ aggregate counters every five seconds; it never includes credentials or pictures
 
 For contributions and safe bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The `src/` and `test/` trees contain protocol regression fixtures used by CI.
-`npm test` runs those offline fixtures; native validation uses the Rust workspace
-commands above.
+Native validation uses the Rust workspace commands above.
 
 See [AGENTS.md](AGENTS.md), [Rust guidance](rust/AGENTS.md) and
 [SECURITY.md](SECURITY.md). The original MIT license is retained; the native HP crates and
