@@ -16,7 +16,7 @@ import { modPow, bytesToBigInt, bigIntToBytes } from '../rfb/crypto/dh.js';
 import { RecordLayer } from './record-layer.js';
 import { buildVideoOffer, buildAudioOffer } from './offers.js';
 import { makeKeyBlob, buildMediaStreamOptions, parseMediaStreamAnswer } from './mediastream.js';
-import { isRtcp, SrtpReceiver } from './srtp.js';
+import { isRtcp, SrtpReceiver, SrtcpSender, buildFir, buildFirLegacy } from './srtp.js';
 import { HevcDepacketizer } from './depacketize.js';
 
 // 0x1d SetDisplayConfiguration (308B): virtual display, dynamic resolution, 5 modes.
@@ -151,6 +151,27 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
   let videoPkts = 0, videoRtp = 0, videoRtcp = 0, firstFrom = null;
   let srtp = null, srtpOk = 0, srtpFail = 0, aus = 0, keyAus = 0, depkt = null;
   const ssrcSeen = new Map();
+  const tileDepkts = new Map(); // ssrc -> HevcDepacketizer(1)
+  const tileOf = new Map();     // ssrc -> tile index
+  let srtcp = null, ourVideoSsrc = 0;
+  const firSeq = new Map();     // ssrc -> FIR sequence number
+  const firedAt = new Map();    // ssrc -> last FIR time (throttle)
+  const gotKeyForSsrc = new Set();
+  // Re-FIR any tile that has sent packets but not yet a keyframe (Apple can be lazy).
+  const reFir = setInterval(() => {
+    for (const ssrc of tileDepkts.keys()) {
+      if (gotKeyForSsrc.has(ssrc)) continue;
+      const last = firedAt.get(ssrc) || 0;
+      if (Date.now() - last > 700) { requestIdr(ssrc); firedAt.set(ssrc, Date.now()); }
+    }
+  }, 350);
+  function requestIdr(targetSsrc) {
+    if (!srtcp) return;
+    const seq = ((firSeq.get(targetSsrc) || 0) + 1) & 0xff;
+    firSeq.set(targetSsrc, seq);
+    const rtcp = Buffer.concat([buildFir(ourVideoSsrc, targetSsrc, seq), buildFirLegacy(targetSsrc)]);
+    try { udpVideo.send(srtcp.protect(rtcp), 5901, host); } catch {}
+  }
   udpVideo.on('message', (msg, rinfo) => {
     videoPkts++;
     if (!firstFrom) firstFrom = `${rinfo.address}:${rinfo.port}`;
@@ -162,12 +183,27 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     if (!dec) { srtpFail++; return; }
     srtpOk++;
     ssrcSeen.set(dec.ssrc, (ssrcSeen.get(dec.ssrc) || 0) + 1);
-    if (depkt) {
-      try {
-        const au = depkt.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
-        if (au) { aus++; if (au.isKey) keyAus++; if (onAu) onAu(au); }
-      } catch { /* depacketize error, keep going */ }
+    // Each SSRC is an INDEPENDENT HEVC stream (a horizontal screen band), decoded
+    // by its own context. So one depacketizer per SSRC, and a stable tile index
+    // assigned by ascending SSRC value (consecutive SSRCs = consecutive bands).
+    let td = tileDepkts.get(dec.ssrc);
+    if (!td) {
+      td = new HevcDepacketizer(1);
+      tileDepkts.set(dec.ssrc, td);
+      // Apple often emits an IDR only for tile 0; FIR the newly-seen tile so it
+      // sends its own keyframe, otherwise its decoder never starts.
+      requestIdr(dec.ssrc);
+      firedAt.set(dec.ssrc, Date.now());
     }
+    try {
+      const au = td.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
+      if (au) {
+        aus++; if (au.isKey) { keyAus++; gotKeyForSsrc.add(dec.ssrc); }
+        // Recompute tile index each emit: it can shift as new SSRCs appear.
+        const tileIdx = [...tileDepkts.keys()].sort((a, b) => a - b).indexOf(dec.ssrc);
+        if (onAu) onAu({ ...au, tileIdx, tiles: tileDepkts.size });
+      }
+    } catch { /* depacketize error, keep going */ }
   });
   await new Promise((res) => { let n = 0; const done = () => (++n === 2 && res());
     udpCtrl.bind(5900, () => { try { udpCtrl.setRecvBufferSize(4 << 20); } catch {} done(); });
@@ -177,7 +213,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     try { udpCtrl.send(Buffer.from([0]), 5900, host); } catch {}
     try { udpVideo.send(Buffer.from([0]), 5901, host); } catch {}
   }, 100);
-  const cleanup = () => { clearInterval(punch); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
+  const cleanup = () => { clearInterval(punch); clearInterval(reFir); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
   log(`UDP bound 5900/5901, firewall-punching ${host}`);
 
   // 1) version handshake
@@ -301,7 +337,9 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     log(`[phase3] sent 0x1c MediaStreamOptions offer (${body.length}B), video ssrc=${video.ssrc}`);
     // Phase 4/5: decrypt with the server-send key (key2) and depacketize.
     srtp = new SrtpReceiver(videoKeys.key2);
-    depkt = new HevcDepacketizer(4);
+    srtcp = new SrtcpSender(videoKeys.key1); // send FIRs with our send key
+    ourVideoSsrc = video.ssrc >>> 0;
+    // Per-SSRC depacketizers are created lazily in the packet handler.
 
     // Read the 0x1c answer (and drain more metadata) for a few seconds while UDP counts.
     let answer = null;

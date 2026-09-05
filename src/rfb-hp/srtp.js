@@ -131,3 +131,65 @@ export class SrtpReceiver {
     if (newFull > curFull) { state.roc = roc; state.maxSeq = seq; }
   }
 }
+
+// ---- SRTCP sender: protect outgoing RTCP (FIR/PLI/RR) with the SEND key (key1) ----
+
+function splitBlob(blob46) {
+  return { key: blob46.subarray(0, 32), salt: blob46.subarray(32, 46) };
+}
+
+export class SrtcpSender {
+  constructor(keyBlob46 /* video key1 = viewer->server */) {
+    const { key, salt } = splitBlob(keyBlob46);
+    this._cipherKey = srtpKdf(key, salt, 3, 32);
+    this._authKey = srtpKdf(key, salt, 4, 20);
+    this._salt = srtpKdf(key, salt, 5, 14);
+    this._index = 0;
+  }
+
+  /** Wrap one RTCP packet as SRTCP (RFC 3711 §3.4). */
+  protect(rtcp) {
+    const index = this._index++;
+    const hdr = rtcp.subarray(0, 8);
+    const plaintext = rtcp.subarray(8);
+    const ssrc = hdr.readUInt32BE(4);
+
+    const iv = Buffer.alloc(16);
+    this._salt.copy(iv, 0);              // salt(14) || 0x0000
+    iv[4] ^= (ssrc >>> 24) & 0xff;
+    iv[5] ^= (ssrc >>> 16) & 0xff;
+    iv[6] ^= (ssrc >>> 8) & 0xff;
+    iv[7] ^= ssrc & 0xff;
+    iv[10] ^= (index >>> 24) & 0xff;
+    iv[11] ^= (index >>> 16) & 0xff;
+    iv[12] ^= (index >>> 8) & 0xff;
+    iv[13] ^= index & 0xff;
+
+    const c = createCipheriv('aes-256-ctr', this._cipherKey, iv);
+    const ciphertext = Buffer.concat([c.update(plaintext), c.final()]);
+    const eIndex = Buffer.alloc(4);
+    eIndex.writeUInt32BE((0x80000000 | index) >>> 0, 0);
+    const body = Buffer.concat([hdr, ciphertext, eIndex]);
+    const tag = createHmac('sha1', this._authKey).update(body).digest().subarray(0, 10);
+    return Buffer.concat([body, tag]);
+  }
+}
+
+/** FIR (RFC 5104 §4.3.1.1): forces an IDR on target_ssrc. */
+export function buildFir(senderSsrc, targetSsrc, seq) {
+  const b = Buffer.alloc(20);
+  b[0] = 0x80 | 4; b[1] = 206; b.writeUInt16BE(4, 2); // PSFB FIR, length 4
+  b.writeUInt32BE(senderSsrc >>> 0, 4);
+  b.writeUInt32BE(0, 8);
+  b.writeUInt32BE(targetSsrc >>> 0, 12);
+  b[16] = seq & 0xff; // + 3 pad bytes (already zero)
+  return b;
+}
+
+/** Legacy FIR (PT=192): the keyframe request Apple's native viewer sends. */
+export function buildFirLegacy(targetSsrc) {
+  const b = Buffer.alloc(8);
+  b[0] = 0x80; b[1] = 192; b.writeUInt16BE(1, 2);
+  b.writeUInt32BE(targetSsrc >>> 0, 4);
+  return b;
+}

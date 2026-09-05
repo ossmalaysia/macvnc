@@ -420,6 +420,16 @@ app.whenReady().then(() => {
       const d = a[0] && typeof a[0] === 'object' && 'message' in a[0] ? a[0] : null;
       console.log('[hp-view] ' + (d ? d.message : a[2]));
     });
+    hpWin.webContents.on('did-fail-load', (_e, code, desc, url) => console.log('[hp-view] LOAD FAILED ' + code + ' ' + desc + ' ' + url));
+    hpWin.webContents.on('preload-error', (_e, p, err) => console.log('[hp-view] PRELOAD ERROR ' + (err && err.message)));
+    hpWin.webContents.on('render-process-gone', (_e, det) => console.log('[hp-view] RENDER GONE ' + JSON.stringify(det)));
+    // Surface any uncaught error/rejection from inside the page.
+    hpWin.webContents.on('did-finish-load', () => {
+      hpWin.webContents.executeJavaScript(
+        "window.addEventListener('error', e => console.log('PAGE ERROR: ' + (e.message||e) + ' @ ' + (e.filename||'') + ':' + (e.lineno||'')));" +
+        "window.addEventListener('unhandledrejection', e => console.log('PAGE REJECT: ' + (e.reason && (e.reason.message||e.reason))));"
+      ).catch(() => {});
+    });
     hpWin.loadFile(path.join(__dirname, '..', 'renderer', 'hp-view.html'));
     hpWin.webContents.on('did-finish-load', async () => {
       try {
