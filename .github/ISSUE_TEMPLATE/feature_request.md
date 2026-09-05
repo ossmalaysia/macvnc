@@ -13,7 +13,7 @@ Describe the task or problem, including any current workaround.
 ## Proposed behavior
 
 Describe the desired user-visible result. Implementation ideas are welcome but
-not required. Mention whether this concerns the native Rust or legacy client.
+not required. Describe the native Rust client behavior you want to change.
 
 ## Alternatives and validation
 

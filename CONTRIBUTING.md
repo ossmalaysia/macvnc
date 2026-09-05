@@ -1,20 +1,18 @@
 # Contributing to MacVNC
 
-MacVNC's active application is the experimental native Rust HP client. The
-JavaScript/Electron implementation remains as a protocol reference and has its
-own tests. Open an issue before a large architectural change so its scope and
-compatibility can be discussed.
+MacVNC's active application is the experimental native Rust HP client. Open an
+issue before a large architectural change so its scope and compatibility can be
+discussed.
 
 ## Get started
 
-Follow [the README](README.md#build-and-run-windows-x64) for Windows x64 setup,
+Follow [the README](README.md#build-and-run-from-source-windows-x64) for Windows x64 setup,
 Rust, the Visual Studio C++ tools, and FFmpeg runtime DLLs. Run commands from the
 repository root. Node is not needed to build the native application.
 
 Read [repository guidance](AGENTS.md), [Rust guidance](rust/AGENTS.md), and the
 guidance in the crate you change. Read [SECURITY.md](SECURITY.md) before changing
-authentication, transport, credentials, or decoder boundaries. Changes to the
-legacy protocol also need [its contracts](docs/CONTRACTS.md).
+authentication, transport, credentials, or decoder boundaries.
 
 ## Validate your change
 
@@ -42,8 +40,6 @@ fixture does not validate the native window or a real HP session.
 
 For packaging changes, run `powershell -File scripts/build-rust.ps1 -Package`
 and check the portable folder with its DLLs, notices, and source materials.
-Legacy JavaScript changes additionally need `npm ci` and `npm test`; those tests
-do not cover the Rust application.
 
 Live testing is optional for ordinary contributions. Only connect to a Mac you
 own or are authorized to test, and use your own locally configured profile. Do

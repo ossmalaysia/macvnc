@@ -10,13 +10,13 @@ in `rust/LICENSE-AGPL-3.0.txt`.
 ## HP protocol implementation provenance
 
 The Rust implementation was newly written in this repository. Its authors
-inspected this repository's earlier JavaScript HP implementation and the
+inspected this repository's protocol implementation and the
 [iShareScreen project](https://github.com/renegadelink/iShareScreen), including
 `proxy/media/nalu.py`, `proxy/media/hevc.py`, `proxy/session.py`,
 `proxy/protocol/burst.py`, and `frontend/desktop/gpu.py`. That upstream project
 is licensed AGPL-3.0-or-later. Its findings informed Apple packet framing,
 decoder state sharing, codec negotiation and band placement. The older local
-JavaScript modules themselves describe portions as ports of that reference.
+native modules describe portions as ports of that reference.
 
 The new Rust source is not a pasted copy of the upstream Python source or a
 line-for-line translation. It is also **not represented as a clean-room
@@ -26,8 +26,7 @@ protocol facts, algorithms or public ABI declarations alone determine copyright.
 Credit belongs to the iShareScreen contributors for their reverse-engineering
 work. The upstream license text is preserved without modification.
 
-The retained JavaScript `src/rfb-hp/` modules identify direct ports of upstream
-code. Their AGPL notice is in `src/rfb-hp/LICENSE`; Electron distributions that
+The native HP modules identify direct ports of upstream code. Native distributions that
 include them retain those terms and ship the notices. The root MIT notice does
 not turn this subtree or a combined distribution into an MIT-only work.
 See [LICENSING.md](../LICENSING.md) for the proposed future business model;
