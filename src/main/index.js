@@ -8,6 +8,10 @@ import { RfbSession } from '../rfb/rfb-session.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Probe reads creds saved under the pre-rename identity; point userData there so
+// safeStorage decrypts with the same OS-keychain scope that wrote them.
+if (process.env.VNC_HP_PROBE) app.setName('vnc-client');
+
 const DEFAULT_PORT = 5900;
 // We request a 16bpp RGB565 pixel format (half the bytes of 32bpp). ZRLE is
 // dropped because its decoder is written for 3-byte CPIXELs; zlib(6), CopyRect
@@ -269,6 +273,23 @@ ipcMain.handle('vnc:connect', (_event, opts) => {
     socket = sock;
     sock.setNoDelay(true);
 
+    // Phase 0 HP probe: when VNC_HP_PROBE is set, drive the socket with the
+    // throwaway HP-mode probe instead of the normal RFB session.
+    if (process.env.VNC_HP_PROBE) {
+      sock.on('connect', async () => {
+        console.log('[hp] tcp connected; running Phase 0 probe');
+        settle({ ok: true });
+        try {
+          const { runHpProbe } = await import('../rfb-hp/phase0-probe.js');
+          const res = await runHpProbe(sock, { username, password }, (m) => console.log('[hp] ' + m));
+          console.log('[hp] RESULT ' + JSON.stringify(res));
+        } catch (err) {
+          console.log('[hp] PROBE ERROR: ' + (err && err.message));
+        }
+      });
+      return;
+    }
+
     sock.on('connect', () => {
       console.log('[vnc] tcp connected host=' + host + ' port=' + port + ' username=' + username);
       flushOutbound();
@@ -317,24 +338,40 @@ function credsPath() {
 }
 
 ipcMain.handle('creds:load', () => {
+  let raw;
   try {
-    const raw = fs.readFileSync(credsPath(), 'utf8');
-    const rec = JSON.parse(raw);
-    let password = '';
-    if (rec.enc && safeStorage.isEncryptionAvailable()) {
-      password = safeStorage.decryptString(Buffer.from(rec.enc, 'base64'));
-    }
-    return {
-      host: rec.host || '',
-      port: rec.port || DEFAULT_PORT,
-      username: rec.username || '',
-      password,
-      profile: rec.profile || '',
-      autoConnect: !!rec.autoConnect,
-    };
+    raw = fs.readFileSync(credsPath(), 'utf8');
   } catch {
-    return null; // no saved creds yet, or unreadable
+    // Fall back to the pre-rename location so host/username survive the rename.
+    try {
+      raw = fs.readFileSync(path.join(app.getPath('userData'), '..', 'vnc-client', 'vnc-creds.json'), 'utf8');
+    } catch {
+      return null; // no saved creds anywhere
+    }
   }
+  let rec;
+  try { rec = JSON.parse(raw); } catch { return null; }
+
+  // Decrypt the password on its own: a failure (e.g. keychain scope changed after
+  // a rename) must not drop the host/username, and must not auto-connect blank.
+  let password = '';
+  let pwOk = true;
+  if (rec.enc) {
+    try {
+      if (!safeStorage.isEncryptionAvailable()) throw new Error('encryption unavailable');
+      password = safeStorage.decryptString(Buffer.from(rec.enc, 'base64'));
+    } catch {
+      pwOk = false;
+    }
+  }
+  return {
+    host: rec.host || '',
+    port: rec.port || DEFAULT_PORT,
+    username: rec.username || '',
+    password,
+    profile: rec.profile || '',
+    autoConnect: !!rec.autoConnect && pwOk, // never auto-connect without a real password
+  };
 });
 
 ipcMain.handle('creds:save', (_event, c) => {
@@ -384,6 +421,29 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+
+  // Phase 0 HP probe: skip the UI, load+decrypt saved creds directly, run the probe.
+  if (process.env.VNC_HP_PROBE) {
+    setTimeout(async () => {
+      try {
+        const rec = JSON.parse(fs.readFileSync(credsPath(), 'utf8'));
+        const password = rec.enc && safeStorage.isEncryptionAvailable()
+          ? safeStorage.decryptString(Buffer.from(rec.enc, 'base64')) : '';
+        console.log('[hp] loaded creds host=' + rec.host + ' user=' + rec.username + ' hasPw=' + !!password);
+        const sock = net.createConnection({ host: rec.host, port: rec.port || DEFAULT_PORT });
+        sock.setNoDelay(true);
+        sock.on('connect', async () => {
+          console.log('[hp] tcp connected; running Phase 0 probe');
+          try {
+            const { runHpProbe } = await import('../rfb-hp/phase0-probe.js');
+            const res = await runHpProbe(sock, { username: rec.username, password }, (m) => console.log('[hp] ' + m));
+            console.log('[hp] RESULT ' + JSON.stringify(res));
+          } catch (err) { console.log('[hp] PROBE ERROR: ' + (err && err.stack || err)); }
+        });
+        sock.on('error', (e) => console.log('[hp] socket error: ' + e.message));
+      } catch (err) { console.log('[hp] SETUP ERROR: ' + (err && err.message)); }
+    }, 800);
+  }
 });
 
 app.on('window-all-closed', () => {
