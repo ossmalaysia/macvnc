@@ -27,7 +27,7 @@ Credit belongs to the iShareScreen contributors for their reverse-engineering
 work. The upstream license text is preserved without modification.
 
 The retained JavaScript `src/rfb-hp/` modules identify direct ports of upstream
-code. Their AGPL notice is in `src/rfb-hp/LICENSE`; Electron distributions that
+code. Their AGPL notice is in `src/rfb-hp/LICENSE`; Native distributions that
 include them retain those terms and ship the notices. The root MIT notice does
 not turn this subtree or a combined distribution into an MIT-only work.
 See [LICENSING.md](../LICENSING.md) for the proposed future business model;

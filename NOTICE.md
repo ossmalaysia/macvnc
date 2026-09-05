@@ -10,7 +10,7 @@ containing these components are not MIT-only distributions.
 
 Credit to the [iShareScreen contributors](https://github.com/renegadelink/iShareScreen)
 for Apple High Performance Screen Sharing reverse engineering. FFmpeg, Rust
-dependencies, Electron and pako retain their respective copyrights and licenses.
+dependencies and pako retain their respective copyrights and licenses.
 See [licenses and provenance](docs/THIRD_PARTY.md) for details and source delivery.
 
 AnchorSprint branding does not replace existing contributor or third-party
