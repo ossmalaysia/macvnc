@@ -10,8 +10,13 @@
 // Throwaway diagnostic. Main-process only; node:crypto is fine here.
 
 import crypto from 'node:crypto';
+import dgram from 'node:dgram';
+import net from 'node:net';
 import { modPow, bytesToBigInt, bigIntToBytes } from '../rfb/crypto/dh.js';
 import { RecordLayer } from './record-layer.js';
+import { buildVideoOffer, buildAudioOffer } from './offers.js';
+import { makeKeyBlob, buildMediaStreamOptions, parseMediaStreamAnswer } from './mediastream.js';
+import { isRtcp } from './srtp.js';
 
 // 0x1d SetDisplayConfiguration (308B): virtual display, dynamic resolution, 5 modes.
 function setDisplayConfig() {
@@ -39,6 +44,30 @@ function setDisplayConfig() {
   return b;
 }
 const fbUpdateRequest = () => Buffer.from([0x03, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+
+// Apple's pre-session "warmup" TCP: connect, do the version handshake, close,
+// dwell ~1.4s. Registers the session with screensharingd so the real session
+// survives, and (per iShareScreen) is required before the media session.
+export function warmupTcp(host, port) {
+  return new Promise((resolve) => {
+    const s = net.createConnection({ host, port });
+    const rr = new Reader(s);
+    let done = false;
+    const finish = () => { if (done) return; done = true; try { s.destroy(); } catch {} setTimeout(resolve, 1400); };
+    s.setTimeout(6000);
+    s.on('timeout', finish);
+    s.on('error', () => { if (!done) { done = true; resolve(); } });
+    s.on('connect', async () => {
+      try {
+        await rr.read(12);                                   // banner
+        s.write(Buffer.from('RFB 003.008\n', 'latin1'));     // version
+        const n = (await rr.read(1))[0];
+        await rr.read(n);                                    // security types
+      } catch { /* ignore */ }
+      finish();
+    });
+  });
+}
 
 const md5 = (buf) => crypto.createHash('md5').update(buf).digest();
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest();
@@ -110,8 +139,30 @@ function ecbDecryptBlock(key16, block16) {
   return Buffer.concat([d.update(block16), d.final()]);
 }
 
-export async function runHpProbe(socket, { username, password }, log) {
+export async function runHpProbe(socket, { host, username, password }, log) {
   const r = new Reader(socket);
+
+  // Bind UDP media sockets EARLY and punch the firewall the whole time — the Mac
+  // streams symmetrically (its 5901 -> our 5901) and the burst lands ~100ms after
+  // the 0x1c answer, so the pinhole must already exist.
+  const udpCtrl = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  const udpVideo = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  let videoPkts = 0, videoRtp = 0, videoRtcp = 0, firstFrom = null;
+  udpVideo.on('message', (msg, rinfo) => {
+    videoPkts++;
+    if (!firstFrom) firstFrom = `${rinfo.address}:${rinfo.port}`;
+    if (isRtcp(msg)) videoRtcp++; else videoRtp++;
+  });
+  await new Promise((res) => { let n = 0; const done = () => (++n === 2 && res());
+    udpCtrl.bind(5900, () => { try { udpCtrl.setRecvBufferSize(4 << 20); } catch {} done(); });
+    udpVideo.bind(5901, () => { try { udpVideo.setRecvBufferSize(4 << 20); } catch {} done(); });
+  });
+  const punch = setInterval(() => {
+    try { udpCtrl.send(Buffer.from([0]), 5900, host); } catch {}
+    try { udpVideo.send(Buffer.from([0]), 5901, host); } catch {}
+  }, 100);
+  const cleanup = () => { clearInterval(punch); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
+  log(`UDP bound 5900/5901, firewall-punching ${host}`);
 
   // 1) version handshake
   const banner = await r.read(12);
@@ -214,13 +265,57 @@ export async function runHpProbe(socket, { username, password }, log) {
     }
   }
   log('[phase2] metadata rects seen: ' + (seen.join(', ') || '(none)'));
-  if (layout) {
-    log(`[phase2] >>> DECRYPTED 0x451 AppleDisplayLayout: backing ${layout.backingW}x${layout.backingH}, scaled ${layout.scaledW}x${layout.scaledH}`);
-    log('[phase2] >>> Full bidirectional encrypted control channel WORKS. Ready for Phase 3 (MediaStreamOptions 0x1c).');
-    return { verdict: 'PASS', phase2: 'layout', layout, fbw, fbh };
+  if (layout) log(`[phase2] 0x451 layout: backing ${layout.backingW}x${layout.backingH}`);
+
+  // ---- PHASE 3: MediaStreamOptions (0x1c) offer -> does the Mac start streaming? ----
+  try {
+    const width = fbw, height = fbh;
+    const video = buildVideoOffer({ width, height });
+    const audio = buildAudioOffer({});
+    const videoKeys = { key1: makeKeyBlob(), key2: makeKeyBlob() };
+    const audioKeys = { key1: makeKeyBlob(), key2: makeKeyBlob() };
+    const uuid = crypto.randomBytes(16);
+    const body = buildMediaStreamOptions({
+      audioOffer: audio.blob,
+      videoOffer: video.blob,
+      audioKeys, videoKeys, uuid, flags: 7,
+    });
+    socket.write(rl.encrypt(body));
+    log(`[phase3] sent 0x1c MediaStreamOptions offer (${body.length}B), video ssrc=${video.ssrc}`);
+
+    // Read the 0x1c answer (and drain more metadata) for a few seconds while UDP counts.
+    let answer = null;
+    const t3 = Date.now() + 4000;
+    while (Date.now() < t3 && !answer) {
+      let msg;
+      try { msg = rl.decrypt(await readRecord(r)); } catch { break; }
+      if (!msg) continue;
+      // The 0x1c answer's inner message starts with 0x00 and embeds a bplist —
+      // try to parse it as an answer whenever a bplist is present, else it's metadata.
+      if (msg.indexOf(Buffer.from('bplist00')) >= 0) {
+        try { const a = parseMediaStreamAnswer(msg); if (a && a.canvasW) answer = a; } catch { /* keep waiting */ }
+      }
+      if (!answer && msg[0] === 0x00) {
+        walkRects(msg, (enc) => { seen.push('0x' + (enc >>> 0).toString(16)); });
+      }
+    }
+    if (answer) log(`[phase3] 0x1c ANSWER: canvas ${answer.canvasW}x${answer.canvasH} tiles=${answer.tileCount}`);
+    else log('[phase3] no 0x1c answer parsed (may still stream)');
+
+    // Give the burst time to land.
+    await new Promise((res) => setTimeout(res, 2500));
+    log(`[phase3] >>> UDP video 5901: ${videoPkts} packets (${videoRtp} RTP, ${videoRtcp} RTCP), first from ${firstFrom || '(none)'}`);
+    const streaming = videoRtp > 0;
+    log(streaming
+      ? '[phase3] >>> SUCCESS: the Mac is streaming HEVC RTP. Phases 4-5 (SRTP decrypt + decode) next.'
+      : '[phase3] >>> No RTP yet. Suspect: single-key 0x1c plist (needs 4 keys), offer fields, or FIR/warmup.');
+    cleanup();
+    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, answer, layout };
+  } catch (err) {
+    cleanup();
+    log('[phase3] error: ' + (err && err.message));
+    return { verdict: 'PASS', phase3: 'error', error: String(err && err.message), layout };
   }
-  log('[phase2] no 0x451 layout decoded in window (control channel proven by CHECKPOINT B regardless).');
-  return { verdict: 'PASS', phase2: 'no-layout', seen, fbw, fbh };
 }
 
 // Read one record: u16be length + that many ciphertext bytes.

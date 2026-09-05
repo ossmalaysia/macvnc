@@ -414,13 +414,15 @@ app.whenReady().then(() => {
         const password = rec.enc && safeStorage.isEncryptionAvailable()
           ? safeStorage.decryptString(Buffer.from(rec.enc, 'base64')) : '';
         console.log('[hp] loaded creds host=' + rec.host + ' user=' + rec.username + ' hasPw=' + !!password);
+        const hp = await import('../rfb-hp/phase0-probe.js');
+        console.log('[hp] warmup TCP (session registration)...');
+        await hp.warmupTcp(rec.host, rec.port || DEFAULT_PORT);
         const sock = net.createConnection({ host: rec.host, port: rec.port || DEFAULT_PORT });
         sock.setNoDelay(true);
         sock.on('connect', async () => {
           console.log('[hp] tcp connected; running Phase 0 probe');
           try {
-            const { runHpProbe } = await import('../rfb-hp/phase0-probe.js');
-            const res = await runHpProbe(sock, { username: rec.username, password }, (m) => console.log('[hp] ' + m));
+            const res = await hp.runHpProbe(sock, { host: rec.host, username: rec.username, password }, (m) => console.log('[hp] ' + m));
             console.log('[hp] RESULT ' + JSON.stringify(res));
           } catch (err) { console.log('[hp] PROBE ERROR: ' + (err && err.stack || err)); }
         });
