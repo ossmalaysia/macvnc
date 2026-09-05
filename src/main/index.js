@@ -273,23 +273,7 @@ ipcMain.handle('vnc:connect', (_event, opts) => {
     socket = sock;
     sock.setNoDelay(true);
 
-    // Phase 0 HP probe: when VNC_HP_PROBE is set, drive the socket with the
-    // throwaway HP-mode probe instead of the normal RFB session.
-    if (process.env.VNC_HP_PROBE) {
-      sock.on('connect', async () => {
-        console.log('[hp] tcp connected; running Phase 0 probe');
-        settle({ ok: true });
-        try {
-          const { runHpProbe } = await import('../rfb-hp/phase0-probe.js');
-          const res = await runHpProbe(sock, { username, password }, (m) => console.log('[hp] ' + m));
-          console.log('[hp] RESULT ' + JSON.stringify(res));
-        } catch (err) {
-          console.log('[hp] PROBE ERROR: ' + (err && err.message));
-        }
-      });
-      return;
-    }
-
+    // HP probe runs from the app-ready hook (VNC_HP_PROBE), not this UI path.
     sock.on('connect', () => {
       console.log('[vnc] tcp connected host=' + host + ' port=' + port + ' username=' + username);
       flushOutbound();

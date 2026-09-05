@@ -11,6 +11,34 @@
 
 import crypto from 'node:crypto';
 import { modPow, bytesToBigInt, bigIntToBytes } from '../rfb/crypto/dh.js';
+import { RecordLayer } from './record-layer.js';
+
+// 0x1d SetDisplayConfiguration (308B): virtual display, dynamic resolution, 5 modes.
+function setDisplayConfig() {
+  const b = Buffer.alloc(308);
+  b[0] = 0x1d;
+  b.writeUInt16BE(0x0130, 2); b.writeUInt16BE(1, 4); b.writeUInt16BE(1, 6); // msg_size, =1, =1
+  const di = 0x0c;
+  b.writeUInt16BE(0x0128, di + 0x00);
+  b.write('macvnc', di + 0x02, 'utf8'); // name, NUL-padded region
+  b.writeUInt32BE(1, di + 0x7a); // display_flags = DYNAMIC_RESOLUTION (MANDATORY)
+  b.writeUInt32BE(4, di + 0x7e); // display_type = 4 virtual (MANDATORY)
+  b.writeFloatBE(369.4545593261719, di + 0x82);
+  b.writeFloatBE(207.81817626953125, di + 0x86);
+  b.writeUInt32BE(3840, di + 0x8a); b.writeUInt32BE(2160, di + 0x8e); // max w/h
+  b.writeUInt16BE(0, di + 0x92); b.writeUInt16BE(0, di + 0x94); // cur/pref mode
+  b.writeUInt32BE(7, di + 0x96); // reserved = 7 (MANDATORY)
+  b.writeUInt16BE(5, di + 0x9a); // mode_count
+  const modes = [[1920, 1080], [1440, 900], [1920, 1080], [1440, 810], [1312, 848]];
+  modes.forEach(([w, h], i) => {
+    const m = di + 0x9c + 28 * i;
+    b.writeUInt32BE(w, m + 0x00); b.writeUInt32BE(h, m + 0x04);   // pixel w/h
+    b.writeUInt32BE(w, m + 0x08); b.writeUInt32BE(h, m + 0x0c);   // scaled w/h (1:1)
+    b.writeDoubleBE(60.0, m + 0x10); b.writeUInt32BE(0, m + 0x18); // refresh, flags
+  });
+  return b;
+}
+const fbUpdateRequest = () => Buffer.from([0x03, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
 
 const md5 = (buf) => crypto.createHash('md5').update(buf).digest();
 const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest();
@@ -149,33 +177,80 @@ export async function runHpProbe(socket, { username, password }, log) {
   const cbcIv = ecbDecryptBlock(authKey, blob.subarray(20, 36));
   log(`unwrapped cbcKey=${hex(cbcKey)} cbcIv=${hex(cbcIv)}`);
 
-  // 9) activate + read first encrypted record, run the MAC oracle (CHECKPOINT B)
+  // 9) activate the record layer, verify the first record (CHECKPOINT B)
   socket.write(setEncryptionToggle());
   log('sent SetEncryption toggle (cmd=2)');
+  const rl = new RecordLayer(cbcKey, cbcIv);
 
-  const recLen = (await r.read(2)).readUInt16BE(0);
-  log(`first record: ciphertext_len=${recLen} (must be nonzero & %16==0)`);
-  if (recLen === 0 || recLen % 16 !== 0) throw new Error('record length not a nonzero multiple of 16: ' + recLen);
-  const ct = await r.read(recLen);
-  const dec = crypto.createDecipheriv('aes-128-cbc', cbcKey, cbcIv); dec.setAutoPadding(false);
-  const pt = Buffer.concat([dec.update(ct), dec.final()]);
-  log(`decrypted record (${pt.length}B): ${hex(pt, 48)}...`);
+  const inner1 = rl.decrypt(await readRecord(r));
+  if (!inner1) { log('>>> CHECKPOINT B FAILED: first record MAC did not verify'); return { verdict: 'FAIL_MAC', fbw, fbh }; }
+  log(`>>> CHECKPOINT B PASSED: first record decrypts+MACs, inner type=0x${inner1[0].toString(16)} len=${inner1.length}`);
+  log('>>> VERDICT: HP mode WORKS on type-30 — SRP/type-33 NOT needed.');
 
-  const body = pt.subarray(0, pt.length - 20);
-  const mac = pt.subarray(pt.length - 20);
-  for (let seq = 0; seq <= 6; seq++) {
-    const want = sha1(Buffer.concat([u32be(seq), body]));
-    if (want.equals(mac)) {
-      const innerLen = body.readUInt16BE(0);
-      log(`>>> CHECKPOINT B PASSED: SHA-1 MAC verifies at seq=${seq}, inner_len=${innerLen}`);
-      log('>>> VERDICT: MD5(shared)[:16] is the correct type-30 wrap key. HP mode WORKS on type-30 — SRP/type-33 NOT needed.');
-      return { verdict: 'PASS', seq, innerLen, fbw, fbh };
+  // 10) PHASE 2: send encrypted SetEncodings + SetDisplayConfiguration + FBUR,
+  //     then decrypt the metadata burst and look for the 0x451 AppleDisplayLayout.
+  socket.write(rl.encrypt(setEncodings()));
+  socket.write(rl.encrypt(setDisplayConfig()));
+  socket.write(rl.encrypt(fbUpdateRequest()));
+  log('[phase2] sent encrypted SetEncodings + SetDisplayConfiguration(0x1d) + FBUR');
+
+  let layout = null;
+  const deadline = Date.now() + 5000;
+  let seen = [];
+  while (Date.now() < deadline && !layout) {
+    let msg;
+    try { msg = rl.decrypt(await readRecord(r)); } catch { break; }
+    if (!msg) { log('[phase2] (a record failed MAC; skipping)'); continue; }
+    if (msg[0] === 0x00) {
+      const rects = walkRects(msg, (enc, x, y, w, h, payload) => {
+        seen.push('0x' + (enc >>> 0).toString(16));
+        if (enc === 0x451 && payload && payload.length >= 10) {
+          layout = { ver: payload.readUInt16BE(0), scaledW: payload.readUInt16BE(2), scaledH: payload.readUInt16BE(4), backingW: payload.readUInt16BE(6), backingH: payload.readUInt16BE(8) };
+        }
+      });
+      if (!rects) log('[phase2] (FBU had a rect we could not size; continuing)');
+    } else {
+      seen.push('msg0x' + msg[0].toString(16));
     }
   }
-  log('>>> CHECKPOINT B FAILED: no SHA-1 MAC match in seq window [0..6].');
-  log('    Either the type-30 wrap key differs from MD5(shared)[:16], or framing/seq differs. Dumping for analysis.');
-  log('    mac(got)=' + hex(mac));
-  return { verdict: 'FAIL_MAC', fbw, fbh, ctHead: hex(ct, 32), ptHead: hex(pt, 32) };
+  log('[phase2] metadata rects seen: ' + (seen.join(', ') || '(none)'));
+  if (layout) {
+    log(`[phase2] >>> DECRYPTED 0x451 AppleDisplayLayout: backing ${layout.backingW}x${layout.backingH}, scaled ${layout.scaledW}x${layout.scaledH}`);
+    log('[phase2] >>> Full bidirectional encrypted control channel WORKS. Ready for Phase 3 (MediaStreamOptions 0x1c).');
+    return { verdict: 'PASS', phase2: 'layout', layout, fbw, fbh };
+  }
+  log('[phase2] no 0x451 layout decoded in window (control channel proven by CHECKPOINT B regardless).');
+  return { verdict: 'PASS', phase2: 'no-layout', seen, fbw, fbh };
+}
+
+// Read one record: u16be length + that many ciphertext bytes.
+async function readRecord(r) {
+  const len = (await r.read(2)).readUInt16BE(0);
+  if (len === 0 || len % 16 !== 0) throw new Error('bad record length ' + len);
+  return r.read(len);
+}
+
+// Walk the rects of a decrypted FramebufferUpdate inner message. Returns false if
+// a rect payload cannot be sized (so the caller stops). cb(enc,x,y,w,h,payload).
+function walkRects(msg, cb) {
+  let p = 2; // u8 type, u8 pad
+  const n = msg.readUInt16BE(p); p += 2;
+  for (let i = 0; i < n; i++) {
+    if (p + 12 > msg.length) return false;
+    const x = msg.readUInt16BE(p), y = msg.readUInt16BE(p + 2), w = msg.readUInt16BE(p + 4), h = msg.readUInt16BE(p + 6);
+    const enc = msg.readInt32BE(p + 8); p += 12;
+    // Known length-prefixed / fixed metadata payloads we can size.
+    if (enc === 0x451 || enc === 0x453 || enc === 0x455 || enc === 0x456 || enc === 0x450) {
+      // These carry their own internal length; hand the remaining buffer to cb and stop
+      // sizing precisely (one metadata rect per FBU is the common case for bring-up).
+      cb(enc, x, y, w, h, msg.subarray(p));
+      return true;
+    }
+    if (enc === 1010 || enc === 1011) { const l = msg.readUInt16BE(p); p += 2 + l; continue; }
+    cb(enc, x, y, w, h, null);
+    return false;
+  }
+  return true;
 }
 
 function u32be(v) { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0, 0); return b; }
