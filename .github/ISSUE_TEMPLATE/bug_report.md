@@ -24,7 +24,7 @@ Describe the problem and what you expected instead.
 ## Environment
 
 - App version or commit:
-- Native Rust or legacy Electron:
+- Native Rust client:
 - Windows version and architecture (or other client OS):
 - macOS version and Mac chip family:
 - Connection type (for example wired LAN, Wi-Fi, or VPN; no addresses):

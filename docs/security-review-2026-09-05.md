@@ -1,6 +1,6 @@
 # Security and public-source preparation — 2026-09-05
 
-Scope: MacVNC v0.1.5 native Rust application, retained Electron distribution
+Scope: MacVNC v0.1.5 native Rust application, native distribution
 metadata, contributor documentation and build workflows. This is a development
 review, not an independent penetration test or a guarantee of security.
 
@@ -17,7 +17,7 @@ review, not an independent penetration test or a guarantee of security.
   and System32. Frame sizes use checked arithmetic and fallible RGBA allocation.
   Pending compressed video is capped at 32 MiB; oversized datagrams are rejected.
 - Contributor/issue/PR guidance excludes credentials and private captures.
-  Current security guidance is separated from historical Electron notes.
+  Current security guidance is separated from historical notes.
   AnchorSprint branding preserves existing notices and upstream attribution.
 - GitHub actions are pinned to commits, dependency update checks are configured,
   and tagged release output is drafted for review. FFmpeg source-material
