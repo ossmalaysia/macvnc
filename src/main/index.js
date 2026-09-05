@@ -10,7 +10,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Probe reads creds saved under the pre-rename identity; point userData there so
 // safeStorage decrypts with the same OS-keychain scope that wrote them.
-if (process.env.VNC_HP_PROBE) app.setName('vnc-client');
+if (process.env.VNC_HP_PROBE) {
+  app.setName('vnc-client');
+  app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
+}
 
 const DEFAULT_PORT = 5900;
 // We request a 16bpp RGB565 pixel format (half the bytes of 32bpp). ZRLE is
@@ -401,34 +404,48 @@ ipcMain.handle('vnc:disconnect', () => {
 // ---------------------------------------------------------------- app lifecycle
 
 app.whenReady().then(() => {
-  createWindow();
+  if (!process.env.VNC_HP_PROBE) createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
-  // Phase 0 HP probe: skip the UI, load+decrypt saved creds directly, run the probe.
+  // HP mode: open the HEVC viewer window, negotiate the media session, and stream
+  // decoded access units to it.
   if (process.env.VNC_HP_PROBE) {
-    setTimeout(async () => {
+    const hpWin = new BrowserWindow({
+      width: 1280, height: 780, backgroundColor: '#000000',
+      webPreferences: { preload: path.join(__dirname, '..', 'preload', 'index.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    });
+    hpWin.webContents.on('console-message', (...a) => {
+      const d = a[0] && typeof a[0] === 'object' && 'message' in a[0] ? a[0] : null;
+      console.log('[hp-view] ' + (d ? d.message : a[2]));
+    });
+    hpWin.loadFile(path.join(__dirname, '..', 'renderer', 'hp-view.html'));
+    hpWin.webContents.on('did-finish-load', async () => {
       try {
         const rec = JSON.parse(fs.readFileSync(credsPath(), 'utf8'));
         const password = rec.enc && safeStorage.isEncryptionAvailable()
           ? safeStorage.decryptString(Buffer.from(rec.enc, 'base64')) : '';
-        console.log('[hp] loaded creds host=' + rec.host + ' user=' + rec.username + ' hasPw=' + !!password);
+        console.log('[hp] host=' + rec.host + ' user=' + rec.username);
+        const send = (ch, v) => { if (!hpWin.isDestroyed()) hpWin.webContents.send(ch, v); };
         const hp = await import('../rfb-hp/phase0-probe.js');
-        console.log('[hp] warmup TCP (session registration)...');
+        send('hp-status', 'warmup…');
         await hp.warmupTcp(rec.host, rec.port || DEFAULT_PORT);
         const sock = net.createConnection({ host: rec.host, port: rec.port || DEFAULT_PORT });
         sock.setNoDelay(true);
         sock.on('connect', async () => {
-          console.log('[hp] tcp connected; running Phase 0 probe');
           try {
-            const res = await hp.runHpProbe(sock, { host: rec.host, username: rec.username, password }, (m) => console.log('[hp] ' + m));
-            console.log('[hp] RESULT ' + JSON.stringify(res));
+            const res = await hp.runHpProbe(sock, {
+              host: rec.host, username: rec.username, password, runSeconds: 60,
+              onAu: (au) => send('hp-au', au),
+            }, (m) => { console.log('[hp] ' + m); send('hp-status', m); });
+            console.log('[hp] RESULT ' + JSON.stringify({ ...res, answer: undefined }));
           } catch (err) { console.log('[hp] PROBE ERROR: ' + (err && err.stack || err)); }
         });
         sock.on('error', (e) => console.log('[hp] socket error: ' + e.message));
       } catch (err) { console.log('[hp] SETUP ERROR: ' + (err && err.message)); }
-    }, 800);
+    });
+    return; // don't open the normal RFB window in HP mode
   }
 });
 

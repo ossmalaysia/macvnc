@@ -16,3 +16,7 @@ contextBridge.exposeInMainWorld('vnc', {
 ipcRenderer.on('vnc-port', (event) => {
   window.postMessage({ type: 'vnc-port' }, '*', event.ports);
 });
+
+// HP (HEVC) viewer: forward access units + status to the page.
+ipcRenderer.on('hp-au', (_e, au) => window.postMessage({ type: 'hp-au', au }, '*'));
+ipcRenderer.on('hp-status', (_e, text) => window.postMessage({ type: 'hp-status', text }, '*'));

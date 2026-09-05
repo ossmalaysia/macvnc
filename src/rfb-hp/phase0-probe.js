@@ -140,7 +140,7 @@ function ecbDecryptBlock(key16, block16) {
   return Buffer.concat([d.update(block16), d.final()]);
 }
 
-export async function runHpProbe(socket, { host, username, password }, log) {
+export async function runHpProbe(socket, { host, username, password, onAu, runSeconds }, log) {
   const r = new Reader(socket);
 
   // Bind UDP media sockets EARLY and punch the firewall the whole time — the Mac
@@ -163,7 +163,7 @@ export async function runHpProbe(socket, { host, username, password }, log) {
     if (depkt) {
       try {
         const au = depkt.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
-        if (au) { aus++; if (au.isKey) keyAus++; }
+        if (au) { aus++; if (au.isKey) keyAus++; if (onAu) onAu(au); }
       } catch { /* depacketize error, keep going */ }
     }
   });
@@ -319,8 +319,8 @@ export async function runHpProbe(socket, { host, username, password }, log) {
     if (answer) log(`[phase3] 0x1c ANSWER: canvas ${answer.canvasW}x${answer.canvasH} tiles=${answer.tileCount}`);
     else log('[phase3] no 0x1c answer parsed (may still stream)');
 
-    // Give the burst time to land.
-    await new Promise((res) => setTimeout(res, 2500));
+    // Give the burst time to land (or stream for runSeconds in display mode).
+    await new Promise((res) => setTimeout(res, (runSeconds || 2.5) * 1000));
     log(`[phase3] >>> UDP video 5901: ${videoPkts} packets (${videoRtp} RTP, ${videoRtcp} RTCP), first from ${firstFrom || '(none)'}`);
     const streaming = videoRtp > 0;
     log(`[phase4] SRTP: ${srtpOk} decrypted+MAC-verified, ${srtpFail} failed`);
