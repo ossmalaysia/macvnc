@@ -127,11 +127,9 @@ aggregate counters every five seconds; it never includes credentials or pictures
 
 For contributions and safe bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The previous JavaScript/Electron implementation remains in `src/` and `test/`
-for protocol comparison and regression fixtures. Its instructions and measured
-history are in [the archived guide](docs/legacy-electron.md). It is not a
-supported release artifact. `npm test` runs the legacy regression fixtures; it
-does not validate the native Rust application.
+The `src/` and `test/` trees contain protocol regression fixtures used by CI.
+`npm test` runs those offline fixtures; native validation uses the Rust workspace
+commands above.
 
 See [AGENTS.md](AGENTS.md), [Rust guidance](rust/AGENTS.md) and
 [SECURITY.md](SECURITY.md). The original MIT license is retained; the native HP crates and

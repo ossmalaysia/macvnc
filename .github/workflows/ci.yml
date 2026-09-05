@@ -41,11 +41,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # The protocol core is dependency-light and the tests never touch the
-      # network or Electron, so a plain install is enough.
+      # network, so a plain install is enough.
       - run: npm ci
-        env:
-          # Electron's postinstall downloads a ~100MB binary we don't need for tests.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - run: npm test
 
   audit:
@@ -60,8 +57,6 @@ jobs:
         with:
           node-version: '24'
       - run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       # Fail the build on a high/critical advisory in anything we ship or build with.
       - name: npm audit (high+)
         run: npm audit --audit-level=high
