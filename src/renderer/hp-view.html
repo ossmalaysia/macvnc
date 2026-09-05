@@ -11,7 +11,10 @@
 </style>
 <canvas id="screen"></canvas>
 <div id="hud">HP: starting…</div>
-<script>
+<script type="module">
+  import { FrameMetrics } from '../rfb/metrics.js';
+  // 4 tiles decode per SOURCE frame — count source frames, not tiles.
+  const metrics = new FrameMetrics({ tiles: 4, stallMs: 100 });
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
   const hud = document.getElementById('hud');
@@ -34,11 +37,12 @@
         ctx.drawImage(frame, 0, (tileIdx % TILES) * th);
         tileIdx++;
         frame.close();
+        metrics.onDecoded(performance.now());
         frames++; fpsN++;
         const now = performance.now();
         if (now - fpsT >= 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; }
       },
-      error: (e) => { decErrors++; hud.textContent = 'decoder error: ' + e.message; },
+      error: (e) => { decErrors++; metrics.onDropped(1); hud.textContent = 'decoder error: ' + e.message; },
     });
     // hev1 + inline VPS/SPS/PPS (Annex-B): the decoder reads real params from the stream.
     try {
@@ -70,9 +74,12 @@
   });
 
   setInterval(() => {
+    const m = metrics.summary();
     hud.textContent =
-      `HP HEVC  ${lastW}x${lastH}  ${fps} fps\n` +
-      `fed ${fed}  frames ${frames}  errors ${decErrors}` +
+      `HP HEVC  ${lastW}x${lastH * TILES}   (tile ${lastW}x${lastH})\n` +
+      `SOURCE ${m.fps.toFixed(1)} fps   ${frames} pics decoded -> ${m.frames} frames\n` +
+      `p50 ${m.p50.toFixed(1)}ms  p95 ${m.p95.toFixed(1)}ms  p99 ${m.p99.toFixed(1)}ms  max ${m.max.toFixed(0)}ms\n` +
+      `jitter ${m.jitter.toFixed(1)}ms  stalls ${m.stalls}  dropped ${m.dropped}  decErr ${decErrors}` +
       (hud.dataset.status ? `\n${hud.dataset.status}` : '');
   }, 250);
 </script>
