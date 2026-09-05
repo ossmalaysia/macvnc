@@ -66,3 +66,15 @@ field as a `Duration`, preserving microsecond precision. This measures network
 round trip rather than video decoding, rendering, or input-to-display latency;
 the estimate may remain unchanged when TCP is idle. No probes or new connections
 are sent, and unsupported systems or unavailable samples return `None`.
+
+Display-layout (`0x451`) records include a two-byte payload length before the
+layout header. Every complete layout update rearms a nonincremental framebuffer
+request, including unchanged login/lock transitions; ordinary updates rearm a
+full-region incremental request. Only one framebuffer request is outstanding, and the
+client does not enable free-running AutoFrameBufferUpdate. Backing-size changes
+coalesce a same-session media reoffer at most once every two seconds using the
+original zeroizing offer and keys. `layout_events` and `media_reoffers` provide
+numeric transition evidence without capturing desktop or key data. This follows
+[upstream session handling](https://github.com/renegadelink/iShareScreen/blob/main/src/isharescreen/proxy/session.py);
+it does not establish that every black frame is a geometry transition or wake a
+sleeping Mac. Live transition recovery remains a separate validation step.

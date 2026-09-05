@@ -669,6 +669,7 @@ fn live_smoke(args: &[String]) -> anyhow::Result<()> {
         },
         seconds,
         args.iter().any(|arg| arg == "--simulate-video-loss"),
+        args.iter().any(|arg| arg == "--wake-display-probe"),
     )?;
     let json = serde_json::to_string_pretty(&report)?;
     if let Some(path) = option_value(args, "--report") {
@@ -677,6 +678,9 @@ fn live_smoke(args: &[String]) -> anyhow::Result<()> {
     println!("{json}");
     if report.composed_updates == 0 {
         bail!("Authenticated session did not produce a composed screen");
+    }
+    if report.waiting_for_keyframe {
+        bail!("Live session ended with video recovery still pending");
     }
     if args.iter().any(|arg| arg == "--simulate-video-loss")
         && (report.injected_packet_loss != 1

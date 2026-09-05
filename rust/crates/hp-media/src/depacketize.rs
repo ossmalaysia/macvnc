@@ -1,5 +1,5 @@
 use crate::RtpPacket;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const MAX_GROUPS: usize = 64;
 const MAX_GROUP_BYTES: usize = 8 * 1024 * 1024;
@@ -7,6 +7,8 @@ const MAX_PENDING_BYTES: usize = 32 * 1024 * 1024;
 const HOLD_MS: u64 = 25;
 const INCOMPLETE_IDLE_MS: u64 = 200;
 const MAX_GROUP_AGE_MS: u64 = 1000;
+const MAX_CANDIDATE_PACKETS: usize = 8;
+const MAX_CANDIDATE_BYTES: usize = 64 * 1024;
 #[derive(Clone)]
 pub struct AccessUnit {
     pub generation: u64,
@@ -33,6 +35,8 @@ struct SourceObservation {
     last: u64,
     donl: Option<bool>,
     params: Vec<Vec<u8>>,
+    prefix: VecDeque<RtpPacket>,
+    prefix_bytes: usize,
 }
 pub struct Depacketizer {
     tiles: usize,
@@ -181,12 +185,44 @@ impl Depacketizer {
                     self.count("source_handoff");
                 } else {
                     self.count("unknown_source");
+                    // Adoption requires evidence from several packets. Preserve
+                    // their FU start/configuration instead of losing the first
+                    // independently decodable picture of the new generation.
+                    // Observations are capped at32 sources; each queue is also
+                    // bounded independently of the active assembly budget.
+                    if self.tiles == 1 && p.payload.len() <= MAX_CANDIDATE_BYTES {
+                        if let Some(s) = self.observed.get_mut(&p.ssrc) {
+                            while s.prefix.len() >= MAX_CANDIDATE_PACKETS
+                                || s.prefix_bytes + p.payload.len() > MAX_CANDIDATE_BYTES
+                            {
+                                if let Some(old) = s.prefix.pop_front() {
+                                    s.prefix_bytes -= old.payload.len();
+                                }
+                            }
+                            s.prefix_bytes += p.payload.len();
+                            s.prefix.push_back(p);
+                        }
+                    }
                     return self.poll(now);
                 }
             }
             self.sources.push(p.ssrc);
             self.sources.sort_unstable();
         }
+        let mut out = Vec::new();
+        if let Some(s) = self.observed.get_mut(&p.ssrc) {
+            let prefix = std::mem::take(&mut s.prefix);
+            s.prefix_bytes = 0;
+            // Begin the normal reordering grace period at adoption: these
+            // packets could not enter assembly while their source was unknown.
+            for prior in prefix {
+                out.extend(self.push_selected(prior, now));
+            }
+        }
+        out.extend(self.push_selected(p, now));
+        out
+    }
+    fn push_selected(&mut self, p: RtpPacket, now: u64) -> Vec<AccessUnit> {
         if let Some(s) = self.observed.get(&p.ssrc) {
             for nal in &s.params {
                 if self.params.len() < 64 {
@@ -532,6 +568,55 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].data.ends_with(&[0, 0, 0, 1, 38, 1, 128, 7, 9]));
         assert!(d.diagnostics().contains("standard"));
+    }
+    #[test]
+    fn source_handoff_preserves_first_fragmented_keyframe() {
+        let mut d = Depacketizer::new(1);
+        d.push(p(1, vec![38, 1, 0, 0, 128], true), 0);
+        d.poll(30);
+        // The parameter AP and FU start arrive before the eight-packet
+        // adoption threshold. All fragments belong to the first new picture.
+        for seq in 1..=8 {
+            let body = match seq {
+                1 => vec![96, 1, 0, 3, 66, 1, 128],
+                2 => vec![98, 1, 0x93, 128, 2],
+                8 => vec![98, 1, 0x53, 8],
+                _ => vec![98, 1, 0x13, seq as u8],
+            };
+            let mut q = p(seq, body, seq == 8);
+            q.ssrc = 2;
+            assert!(d.push(q, 110 + seq as u64).is_empty());
+        }
+        let out = d.poll(150);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].key);
+        assert_eq!(out[0].generation, 1);
+        assert!(out[0]
+            .data
+            .ends_with(&[0, 0, 0, 1, 38, 1, 128, 2, 3, 4, 5, 6, 7, 8]));
+        assert!(!d.counters.contains_key("fu_missing_start"));
+        assert_eq!(d.observed[&2].packets, 8); // replay does not double-count
+        assert!(d.observed[&2].prefix.is_empty());
+    }
+    #[test]
+    fn candidate_prefix_is_bounded_by_bytes_and_packet_count() {
+        let mut d = Depacketizer::new(1);
+        d.push(p(1, vec![38, 1, 0, 0, 128], true), 0);
+        for seq in 1..=20 {
+            let mut q = p(seq, vec![2; 10_000], false);
+            q.ssrc = 2;
+            d.push(q, 1);
+        }
+        assert_eq!(d.observed[&2].prefix.len(), 6);
+        assert_eq!(d.observed[&2].prefix_bytes, 60_000);
+        for seq in 21..=40 {
+            let mut q = p(seq, vec![2, 1], false);
+            q.ssrc = 2;
+            d.push(q, 2);
+        }
+        assert_eq!(d.observed[&2].prefix.len(), MAX_CANDIDATE_PACKETS);
+        assert_eq!(d.observed[&2].prefix_bytes, 16);
+        assert_eq!(d.sources(), &[1]);
     }
     #[test]
     fn single_picture_adopts_new_source_only_after_old_source_quiet() {

@@ -220,16 +220,12 @@ fn scan_update(body: &[u8]) -> (bool, Option<(u16, u16)>) {
         let rest = &body[p..];
         let size = match enc {
             1103 => 36,
-            0x451 if rest.len() >= 20 => {
-                20 + u16::from_be_bytes([rest[18], rest[19]]) as usize * 56
-            }
-            0x453 => 22,
-            0x455 if rest.len() >= 10 => 10 + u16::from_be_bytes([rest[8], rest[9]]) as usize,
-            0x456 if rest.len() >= 2 => u16::from_be_bytes([rest[0], rest[1]]) as usize,
             0x450 if rest.len() >= 8 => {
                 8usize.saturating_add(u32::from_be_bytes(rest[4..8].try_into().unwrap()) as usize)
             }
-            1010 | 1011 if rest.len() >= 2 => 2 + u16::from_be_bytes([rest[0], rest[1]]) as usize,
+            1002 | 1010 | 1011 | 0x451 | 0x453 | 0x455 | 0x456 if rest.len() >= 2 => {
+                2 + u16::from_be_bytes([rest[0], rest[1]]) as usize
+            }
             -223 => 0,
             _ => return (false, None),
         };
@@ -237,9 +233,22 @@ fn scan_update(body: &[u8]) -> (bool, Option<(u16, u16)>) {
             return (false, None);
         }
         if enc == 0x451 {
-            let w = u16::from_be_bytes([rest[6], rest[7]]);
-            let h = u16::from_be_bytes([rest[8], rest[9]]);
-            if w > 0 && h > 0 && w <= 16384 && h <= 16384 {
+            let payload = &rest[2..size];
+            if payload.len() < 20 {
+                return (false, None);
+            }
+            let count = u16::from_be_bytes([payload[18], payload[19]]) as usize;
+            if payload.len() < 20 + count * 56 {
+                return (false, None);
+            }
+            let w = u16::from_be_bytes([payload[6], payload[7]]);
+            let h = u16::from_be_bytes([payload[8], payload[9]]);
+            if w > 0
+                && h > 0
+                && w <= 16384
+                && h <= 16384
+                && u32::from(w) * u32::from(h) <= 67_108_864
+            {
                 layout = Some((w, h));
             }
         }
@@ -294,16 +303,33 @@ mod tests {
     }
     #[test]
     fn layout_requires_all_declared_display_records() {
-        let mut b = vec![0; 36];
+        let mut b = vec![0; 38];
         b[3] = 1;
         b[12..16].copy_from_slice(&0x451i32.to_be_bytes());
-        b[22..24].copy_from_slice(&1920u16.to_be_bytes());
-        b[24..26].copy_from_slice(&1080u16.to_be_bytes());
+        b[16..18].copy_from_slice(&20u16.to_be_bytes());
+        b[24..26].copy_from_slice(&1920u16.to_be_bytes());
+        b[26..28].copy_from_slice(&1080u16.to_be_bytes());
         assert_eq!(display_layout(&b), Some((1920, 1080)));
-        b[35] = 1;
+        for n in 0..b.len() {
+            assert!(!complete_update(&b[..n]));
+        }
+        b[37] = 1;
         assert_eq!(display_layout(&b), None);
         b.extend([0; 56]);
+        b[16..18].copy_from_slice(&76u16.to_be_bytes());
         assert_eq!(display_layout(&b), Some((1920, 1080)));
+        // Following length-prefixed config rectangles must not shift the next header.
+        b[3] = 4;
+        for encoding in [0x453i32, 0x455, 0x456] {
+            b.extend([0; 8]);
+            b.extend(encoding.to_be_bytes());
+            b.extend([0, 3, 1, 2, 3]);
+        }
+        assert!(complete_update(&b));
+        assert_eq!(display_layout(&b), Some((1920, 1080)));
+        for n in 0..b.len() {
+            assert!(!complete_update(&b[..n]));
+        }
     }
     #[test]
     fn answer_decodes_bounded_compressed_geometry() {

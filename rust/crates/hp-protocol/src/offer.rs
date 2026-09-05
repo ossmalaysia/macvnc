@@ -159,15 +159,6 @@ pub(crate) fn media_options(
 pub(crate) fn put16(b: &mut [u8], p: usize, v: u16) {
     b[p..p + 2].copy_from_slice(&v.to_be_bytes());
 }
-pub(crate) fn auto_fbu(w: u16, h: u16) -> Vec<u8> {
-    let mut out = vec![0; 16];
-    out[0] = 9;
-    out[3] = 1;
-    put32(&mut out, 4, u32::MAX);
-    put16(&mut out, 12, w);
-    put16(&mut out, 14, h);
-    out
-}
 pub(crate) fn put32(b: &mut [u8], p: usize, v: u32) {
     b[p..p + 4].copy_from_slice(&v.to_be_bytes());
 }

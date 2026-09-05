@@ -1,4 +1,4 @@
-# MacVNC v0.1.5 — native Rust HP client
+# MacVNC v0.1.6 — native Rust HP client
 
 Developed by [AnchorSprint](https://anchorsprint.com).
 
@@ -20,7 +20,13 @@ currently restores the picture in the reported case.
 A language rewrite alone does not prove better FPS. Hardware HEVC acceleration is not currently enabled; the native
 software decoder uses slice threading for Apple's HEVC 4:4:4 stream.
 
-## Build and run (Windows x64)
+## Install without building (Windows x64)
+
+Download the latest **native Rust HP** package from [GitHub Releases](https://github.com/ossmalaysia/macvnc/releases/latest), extract the ZIP, and run `macvnc-app.exe`. Keep every DLL beside the executable. The package is portable and does not require Node, Rust, Electron, or an installer.
+
+Releases are unsigned, so Windows SmartScreen may require explicit approval. Verify `SHA256SUMS.txt` before launching a downloaded package.
+
+## Build and run from source (Windows x64)
 
 Install stable Rust using rustup and Visual Studio C++ build tools with the
 Windows SDK, then:
@@ -34,8 +40,8 @@ powershell -File scripts/build-rust.ps1 -Package
 The packaging script downloads a pinned, checksum-verified FFmpeg 7 LGPL shared
 build. Keep its DLLs beside the executable. `dist/macvnc-rust` is the portable
 package; it includes codec license/source notices. No Node installation is needed.
-If Node is installed, `npm start` launches this Rust package and `npm run
-dist:win` builds it. The `:electron` scripts retain the old Windows build.
+`npm start` and `npm run dist:win` are compatibility wrappers around the Rust
+build scripts.
 
 For development, set `MACVNC_FFMPEG_DIR` to the directory containing
 `avcodec-61.dll`, `avutil-59.dll`, `swresample-5.dll`, and `swscale-8.dll` before
@@ -123,8 +129,9 @@ For contributions and safe bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The previous JavaScript/Electron implementation remains in `src/` and `test/`
 for protocol comparison and regression fixtures. Its instructions and measured
-history are in [the legacy guide](docs/legacy-electron.md). `npm run start:electron` launches the legacy app. `npm test` runs those
-legacy tests; they do not validate the new Rust application.
+history are in [the archived guide](docs/legacy-electron.md). It is not a
+supported release artifact. `npm test` runs the legacy regression fixtures; it
+does not validate the native Rust application.
 
 See [AGENTS.md](AGENTS.md), [Rust guidance](rust/AGENTS.md) and
 [SECURITY.md](SECURITY.md). The original MIT license is retained; the native HP crates and

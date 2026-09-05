@@ -49,6 +49,42 @@ pub struct HpConnection {
     pub audio_ssrc: u32,
     pub stream_config: Option<metadata::StreamConfig>,
     update_outstanding: bool,
+    media_offer: Zeroizing<Vec<u8>>,
+    recovery: LayoutRecovery,
+    /// Complete display-layout updates, including unchanged login/lock transitions.
+    pub layout_events: u64,
+    /// Same-session media offers sent after a backing geometry change.
+    pub media_reoffers: u64,
+}
+#[derive(Default)]
+struct LayoutRecovery {
+    current: Option<(u16, u16)>,
+    pending: Option<(u16, u16)>,
+    last_sent: Option<Instant>,
+}
+impl LayoutRecovery {
+    fn observe(&mut self, dimensions: (u16, u16)) {
+        if let Some(current) = self.current {
+            self.pending = (current != dimensions).then_some(dimensions);
+        }
+    }
+    fn take_due(&mut self, now: Instant) -> bool {
+        if self.pending.is_none()
+            || self
+                .last_sent
+                .is_some_and(|last| now.duration_since(last) < Duration::from_secs(2))
+        {
+            return false;
+        }
+        self.current = self.pending.take();
+        self.last_sent = Some(now);
+        true
+    }
+}
+fn framebuffer_request(incremental: bool) -> [u8; 10] {
+    let size: u16 = u16::MAX;
+    let [hi, lo] = size.to_be_bytes();
+    [3, u8::from(incremental), 0, 0, 0, 0, hi, lo, hi, lo]
 }
 impl Drop for HpConnection {
     fn drop(&mut self) {
@@ -181,7 +217,6 @@ impl HpConnection {
         ] {
             tcp.write_all(&records.encrypt(&message)?)?;
         }
-        tcp.write_all(&records.encrypt(&offer::auto_fbu(width, height))?)?;
         let mut video_send_key = Zeroizing::new([0; 46]);
         let mut video_receive_key = Zeroizing::new([0; 46]);
         rand::rngs::OsRng.fill_bytes(&mut *video_send_key);
@@ -220,6 +255,10 @@ impl HpConnection {
             audio_send_key: *audio_send_key,
             stream_config: None,
             update_outstanding: true,
+            media_offer,
+            recovery: LayoutRecovery::default(),
+            layout_events: 0,
+            media_reoffers: 0,
         };
         result.inspect_control(&first)?;
         let deadline = Instant::now() + Duration::from_secs(12);
@@ -249,7 +288,7 @@ impl HpConnection {
                 && requeries < 16
                 && last_offer.elapsed() >= Duration::from_millis(500)
             {
-                result.send(&media_offer)?;
+                result.send_media_offer()?;
                 requeries += 1;
                 last_offer = Instant::now();
             }
@@ -287,9 +326,16 @@ impl HpConnection {
     }
     fn send(&mut self, body: &[u8]) -> Result<()> {
         let wire = self.records.encrypt(body)?;
+        self.write_record(&wire)
+    }
+    fn send_media_offer(&mut self) -> Result<()> {
+        let wire = self.records.encrypt(&self.media_offer)?;
+        self.write_record(&wire)
+    }
+    fn write_record(&mut self, wire: &[u8]) -> Result<()> {
         self.tcp.set_nonblocking(false)?;
         self.tcp.set_write_timeout(Some(Duration::from_secs(3)))?;
-        let r = self.tcp.write_all(&wire);
+        let r = self.tcp.write_all(wire);
         let restore = self.tcp.set_nonblocking(true);
         r?;
         restore?;
@@ -317,36 +363,35 @@ impl HpConnection {
         for body in &result {
             self.inspect_control(body)?;
         }
+        if self.recovery.take_due(Instant::now()) {
+            self.send_media_offer()?;
+            self.media_reoffers = self.media_reoffers.saturating_add(1);
+        }
         Ok(result)
     }
     fn inspect_control(&mut self, body: &[u8]) -> Result<()> {
         let layout = metadata::display_layout(body);
-        if let Some((w, h)) = layout {
-            self.send(&offer::auto_fbu(w, h))?;
+        if let Some(dimensions) = layout {
+            self.layout_events = self.layout_events.saturating_add(1);
+            self.recovery.observe(dimensions);
         }
         if let Some(config) = metadata::parse_answer(body)? {
             ensure!(
                 !config.ltr_enabled,
                 "Mac selected unsupported long-term-reference acknowledgement mode"
             );
+            if self.stream_config.is_none() {
+                self.recovery.current = Some((config.width, config.height));
+            }
             self.width = config.width;
             self.height = config.height;
             self.stream_config = Some(config);
         }
         if metadata::complete_update(body) && self.update_outstanding {
             self.update_outstanding = false;
-            self.send(&[
-                3,
-                u8::from(layout.is_none()),
-                0,
-                0,
-                0,
-                0,
-                255,
-                255,
-                255,
-                255,
-            ])?;
+            // Layout transitions require a full refresh, even at unchanged dimensions.
+            // Preserve the full request region required by the validated native HP path.
+            self.send(&framebuffer_request(layout.is_none()))?;
             self.update_outstanding = true;
         }
         Ok(())
@@ -503,6 +548,59 @@ fn find_rekey(tcp: &mut TcpStream) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_layout_recovery_coalesces_and_does_not_loop() {
+        let mut state = LayoutRecovery::default();
+        let now = Instant::now();
+        state.observe((1920, 1080));
+        assert!(!state.take_due(now), "startup has not negotiated a stream");
+        state.current = Some((1920, 1080));
+        state.observe((1920, 1080));
+        assert!(!state.take_due(now), "same-size login requires FBUR only");
+        state.observe((1280, 720));
+        assert!(state.take_due(now));
+        state.observe((1280, 720));
+        assert!(!state.take_due(now + Duration::from_secs(3)));
+        state.observe((1920, 1080));
+        assert!(!state.take_due(now + Duration::from_secs(1)));
+        state.observe((1600, 900));
+        assert!(state.take_due(now + Duration::from_secs(2)));
+        assert_eq!(state.current, Some((1600, 900)));
+        assert!(!state.take_due(now + Duration::from_secs(8)));
+        assert_eq!(
+            framebuffer_request(true),
+            [3, 1, 0, 0, 0, 0, 255, 255, 255, 255]
+        );
+        assert_eq!(
+            framebuffer_request(false),
+            [3, 0, 0, 0, 0, 0, 255, 255, 255, 255]
+        );
+    }
+    #[test]
+    fn prefixed_layout_survives_single_byte_encrypted_transport() {
+        let mut body = vec![0; 38];
+        body[3] = 1;
+        body[12..16].copy_from_slice(&0x451i32.to_be_bytes());
+        body[16..18].copy_from_slice(&20u16.to_be_bytes());
+        body[24..26].copy_from_slice(&1920u16.to_be_bytes());
+        body[26..28].copy_from_slice(&1080u16.to_be_bytes());
+        let mut sender = RecordLayer::new([1; 16], [2; 16]);
+        let mut receiver = RecordLayer::new([1; 16], [2; 16]);
+        let wire = sender.encrypt(&body).unwrap();
+        let mut pending = Vec::new();
+        for (index, byte) in wire.iter().enumerate() {
+            pending.push(*byte);
+            let messages = record::drain_records(&mut receiver, &mut pending).unwrap();
+            if index + 1 == wire.len() {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(metadata::display_layout(&messages[0]), Some((1920, 1080)));
+                assert!(metadata::complete_update(&messages[0]));
+            } else {
+                assert!(messages.is_empty());
+            }
+        }
+        assert!(pending.is_empty());
+    }
     #[test]
     fn handshake_deadline_and_eof_stop_partial_reads() {
         let mut reader = std::io::Cursor::new(vec![1, 2]);

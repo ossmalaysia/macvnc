@@ -82,6 +82,9 @@ pub struct ProbeReport {
     pub height: u32,
     pub udp_packets: u64,
     pub control_udp_packets: u64,
+    pub layout_events: u64,
+    pub media_reoffers: u64,
+    pub stream_reconfigurations: u64,
     pub authenticated_packets: u64,
     pub media_sources: usize,
     pub rejected_packets: u64,
@@ -90,6 +93,10 @@ pub struct ProbeReport {
     pub decoded_width: u32,
     pub decoded_height: u32,
     pub composed_updates: u64,
+    pub black_pictures: u64,
+    pub last_picture_black: bool,
+    pub last_picture_transparent: bool,
+    pub wake_probe_attempts: u64,
     pub decode_errors: u64,
     pub reference_errors: u64,
     pub decoder_log_errors: u64,
@@ -145,9 +152,15 @@ pub fn start(repaint: Arc<dyn Fn() + Send + Sync>) -> Backend {
 struct ProbeOptions {
     duration: Duration,
     simulate_loss: bool,
+    wake_display: bool,
 }
 
-pub fn probe(opts: ConnectOptions, seconds: u64, simulate_loss: bool) -> Result<ProbeReport> {
+pub fn probe(
+    opts: ConnectOptions,
+    seconds: u64,
+    simulate_loss: bool,
+    wake_display: bool,
+) -> Result<ProbeReport> {
     let (_command_tx, rx) = mpsc::channel();
     let (tx, _events) = mpsc::channel();
     run_session(
@@ -160,6 +173,7 @@ pub fn probe(opts: ConnectOptions, seconds: u64, simulate_loss: bool) -> Result<
         Some(ProbeOptions {
             duration: Duration::from_secs(seconds.clamp(5, 120)),
             simulate_loss,
+            wake_display,
         }),
     )
 }
@@ -193,9 +207,9 @@ fn run_session(
     if cancelled.load(Ordering::Acquire) {
         return Ok(ProbeReport::default());
     }
-    let width = connection.width as u32;
-    let height = connection.height as u32;
-    let tiles = connection
+    let mut width = connection.width as u32;
+    let mut height = connection.height as u32;
+    let mut tiles = connection
         .stream_config
         .as_ref()
         .map_or(1, |config| config.tile_count as usize);
@@ -224,6 +238,8 @@ fn run_session(
     let mut loss_epoch = 0;
     let mut packet = [0u8; 65536];
     let mut connected = false;
+    let mut geometry_pending = false;
+    let mut reoffers_seen = connection.media_reoffers;
     let mut loss_at = None;
     // Opt-in aggregate telemetry for authorized live validation, never media,
     // credentials, hostnames, usernames, keys or input contents.
@@ -249,6 +265,35 @@ fn run_session(
             }
         }
         connection.poll_control()?;
+        report.layout_events = connection.layout_events;
+        report.media_reoffers = connection.media_reoffers;
+        let next_width = u32::from(connection.width);
+        let next_height = u32::from(connection.height);
+        if (width, height) != (next_width, next_height)
+            || reoffers_seen != connection.media_reoffers
+        {
+            width = next_width;
+            height = next_height;
+            tiles = connection
+                .stream_config
+                .as_ref()
+                .map_or(1, |c| usize::from(c.tile_count));
+            compositor = Compositor::new(width, height, tiles)?;
+            decoder = HevcDecoder::new()?;
+            depacketizer = Depacketizer::new(tiles);
+            // Keys and SRTP replay state remain valid across a same-key re-offer.
+            generation = None;
+            loss_epoch = 0;
+            needs_keyframe = true;
+            dirty = false;
+            geometry_pending = true;
+            reoffers_seen = connection.media_reoffers;
+            report.width = width;
+            report.height = height;
+            report.stream_reconfigurations += 1;
+            let _ = events.send(Event::Status("Display changed · refreshing video…".into()));
+            repaint();
+        }
         // The control UDP pinhole is kept alive and its incoming datagrams drained.
         for _ in 0..256 {
             match connection.control_socket.recv(&mut packet) {
@@ -364,14 +409,24 @@ fn run_session(
         }
         if dirty && !needs_keyframe && !cancelled.load(Ordering::Acquire) {
             let frame = compositor.snapshot();
+            report.last_picture_black = frame
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0);
+            report.last_picture_transparent =
+                frame.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 0);
+            report.black_pictures += u64::from(report.last_picture_black);
             report.composed_updates += 1;
             report.peak_frame_bytes = frame.pixels.len();
             // Publish once after the received batch. The replaceable slot drops
             // obsolete frames without a second timer that can halve presentation
             // rate when decode completion falls just before the timer deadline.
             *latest.lock().unwrap() = Some(frame);
-            if !connected {
+            if !connected || geometry_pending {
                 connected = true;
+                geometry_pending = false;
                 let _ = events.send(Event::Connected { width, height });
             }
             dirty = false;
@@ -439,6 +494,17 @@ fn run_session(
         report.waiting_for_keyframe = needs_keyframe;
         report.last_good_picture_age_seconds = last_frame.elapsed().as_secs_f64();
         report.last_video_packet_age_seconds = last_video_packet.elapsed().as_secs_f64();
+        // Explicit diagnostic mode only. A modifier pair emits no text and lets
+        // a user-authorized probe distinguish display sleep from a dead stream.
+        if probe.is_some_and(|p| p.wake_display)
+            && report.last_picture_black
+            && last_frame.elapsed() > Duration::from_secs(2)
+            && report.wake_probe_attempts == 0
+        {
+            connection.send_key(true, 0xffe1)?;
+            connection.send_key(false, 0xffe1)?;
+            report.wake_probe_attempts += 1;
+        }
         if last_diagnostics.elapsed() >= Duration::from_secs(5) {
             if let Some(path) = &diagnostics {
                 report.media_sources = receiver.sources().len();
