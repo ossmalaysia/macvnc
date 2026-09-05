@@ -16,7 +16,8 @@ import { modPow, bytesToBigInt, bigIntToBytes } from '../rfb/crypto/dh.js';
 import { RecordLayer } from './record-layer.js';
 import { buildVideoOffer, buildAudioOffer } from './offers.js';
 import { makeKeyBlob, buildMediaStreamOptions, parseMediaStreamAnswer } from './mediastream.js';
-import { isRtcp } from './srtp.js';
+import { isRtcp, SrtpReceiver } from './srtp.js';
+import { HevcDepacketizer } from './depacketize.js';
 
 // 0x1d SetDisplayConfiguration (308B): virtual display, dynamic resolution, 5 modes.
 function setDisplayConfig() {
@@ -148,10 +149,23 @@ export async function runHpProbe(socket, { host, username, password }, log) {
   const udpCtrl = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   const udpVideo = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   let videoPkts = 0, videoRtp = 0, videoRtcp = 0, firstFrom = null;
+  let srtp = null, srtpOk = 0, srtpFail = 0, aus = 0, keyAus = 0, depkt = null;
   udpVideo.on('message', (msg, rinfo) => {
     videoPkts++;
     if (!firstFrom) firstFrom = `${rinfo.address}:${rinfo.port}`;
-    if (isRtcp(msg)) videoRtcp++; else videoRtp++;
+    if (isRtcp(msg)) { videoRtcp++; return; }
+    videoRtp++;
+    if (!srtp) return;
+    let dec;
+    try { dec = srtp.unprotect(msg); } catch { srtpFail++; return; }
+    if (!dec) { srtpFail++; return; }
+    srtpOk++;
+    if (depkt) {
+      try {
+        const au = depkt.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
+        if (au) { aus++; if (au.isKey) keyAus++; }
+      } catch { /* depacketize error, keep going */ }
+    }
   });
   await new Promise((res) => { let n = 0; const done = () => (++n === 2 && res());
     udpCtrl.bind(5900, () => { try { udpCtrl.setRecvBufferSize(4 << 20); } catch {} done(); });
@@ -282,6 +296,9 @@ export async function runHpProbe(socket, { host, username, password }, log) {
     });
     socket.write(rl.encrypt(body));
     log(`[phase3] sent 0x1c MediaStreamOptions offer (${body.length}B), video ssrc=${video.ssrc}`);
+    // Phase 4/5: decrypt with the server-send key (key2) and depacketize.
+    srtp = new SrtpReceiver(videoKeys.key2);
+    depkt = new HevcDepacketizer(4);
 
     // Read the 0x1c answer (and drain more metadata) for a few seconds while UDP counts.
     let answer = null;
@@ -306,11 +323,13 @@ export async function runHpProbe(socket, { host, username, password }, log) {
     await new Promise((res) => setTimeout(res, 2500));
     log(`[phase3] >>> UDP video 5901: ${videoPkts} packets (${videoRtp} RTP, ${videoRtcp} RTCP), first from ${firstFrom || '(none)'}`);
     const streaming = videoRtp > 0;
-    log(streaming
-      ? '[phase3] >>> SUCCESS: the Mac is streaming HEVC RTP. Phases 4-5 (SRTP decrypt + decode) next.'
-      : '[phase3] >>> No RTP yet. Suspect: single-key 0x1c plist (needs 4 keys), offer fields, or FIR/warmup.');
+    log(`[phase4] SRTP: ${srtpOk} decrypted+MAC-verified, ${srtpFail} failed`);
+    log(`[phase5] HEVC access units: ${aus} (${keyAus} key/IDR)`);
+    if (srtpOk > 0) log('[phase4] >>> SUCCESS: SRTP crypto is byte-correct on live packets.');
+    else if (streaming) log('[phase4] >>> RTP arrives but SRTP MAC fails — key2 selection or IV/HMAC formula.');
+    if (aus > 0) log('[phase5] >>> Depacketizer produced HEVC access units — ready to feed WebCodecs.');
     cleanup();
-    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, answer, layout };
+    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, srtpOk, srtpFail, aus, keyAus, answer, layout };
   } catch (err) {
     cleanup();
     log('[phase3] error: ' + (err && err.message));
