@@ -346,6 +346,28 @@ impl App {
                         });
                     }
                 }
+                // egui turns Ctrl/Cmd+C and Ctrl/Cmd+X into semantic
+                // clipboard events; forward the corresponding key as well.
+                egui::Event::Copy => {
+                    self.send(Command::Key {
+                        keysym: b'c' as u32,
+                        down: true,
+                    });
+                    self.send(Command::Key {
+                        keysym: b'c' as u32,
+                        down: false,
+                    });
+                }
+                egui::Event::Cut => {
+                    self.send(Command::Key {
+                        keysym: b'x' as u32,
+                        down: true,
+                    });
+                    self.send(Command::Key {
+                        keysym: b'x' as u32,
+                        down: false,
+                    });
+                }
                 egui::Event::Text(text) if !text.is_ascii() => {
                     for c in text.chars() {
                         let keysym = if c as u32 <= 255 {
