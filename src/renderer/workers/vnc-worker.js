@@ -7,6 +7,7 @@
 import { decodeRect } from '../../rfb/decoders/index.js';
 import { createInflateContext } from '../../rfb/inflate/streams.js';
 import { CANVAS_PIXEL_FORMAT } from '../../rfb/protocol/pixel-format.js';
+import { FrameMetrics } from '../../rfb/metrics.js';
 
 const MAX_REPORTED_DECODE_ERRORS = 32;
 
@@ -29,6 +30,8 @@ let dy1 = 0;
 
 let frameHandle = 0;
 let framesPainted = 0;
+const metrics = new FrameMetrics({ stallMs: 100 });
+let decodeMs = 0, rectCount = 0, rectBytes = 0;
 let fpsWindowStart = 0;
 let decodeErrorsReported = 0;
 
@@ -112,6 +115,7 @@ function paint() {
     })
     .catch((err) => report('error', 'createImageBitmap failed: ' + (err && err.message)));
 
+  metrics.onFrame(now());
   framesPainted++;
   const t = now();
   if (fpsWindowStart === 0) {
@@ -120,7 +124,9 @@ function paint() {
     const fps = Math.round((framesPainted * 1000) / (t - fpsWindowStart));
     framesPainted = 0;
     fpsWindowStart = t;
-    self.postMessage({ kind: 'fps', fps });
+    const m = metrics.summary();
+    self.postMessage({ kind: 'fps', fps, stats: { fps: m.fps, p50: m.p50, p95: m.p95, p99: m.p99, max: m.max, jitter: m.jitter, stalls: m.stalls, dropped: m.dropped, decodeMs, rectCount, rectBytes } });
+    decodeMs = 0; rectCount = 0; rectBytes = 0;
   }
 }
 
@@ -190,6 +196,7 @@ function onRect(msg) {
     return;
   }
   const rect = { x: msg.x | 0, y: msg.y | 0, w: msg.w | 0, h: msg.h | 0 };
+  const _t0 = now();
   try {
     decodeRect(msg.encoding, msg.payload, rect, CANVAS_PIXEL_FORMAT, fb, fbW, fbH, decodeCtx);
   } catch (err) {
@@ -205,6 +212,7 @@ function onRect(msg) {
     }
     return;
   }
+  decodeMs += now() - _t0; rectCount++; rectBytes += (msg.payload ? msg.payload.length : 0);
   markDirty(rect.x, rect.y, rect.w, rect.h);
   scheduleFrame();
 }

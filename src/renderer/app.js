@@ -216,9 +216,19 @@ function onWorkerMessage(ev) {
       layout();
       break;
 
-    case 'fps':
-      fpsEl.textContent = `${msg.fps} fps`;
+    case 'fps': {
+      const s = msg.stats;
+      if (!s) { fpsEl.textContent = `${msg.fps} fps`; break; }
+      // Show the pacing distribution, not just a mean - a stall is what you feel.
+      fpsEl.textContent =
+        `${s.fps.toFixed(1)} fps · p50 ${s.p50.toFixed(0)}ms · p95 ${s.p95.toFixed(0)}ms · ` +
+        `jitter ${s.jitter.toFixed(0)}ms · stalls ${s.stalls}` +
+        (s.rectCount ? ` · decode ${s.decodeMs.toFixed(0)}ms/${s.rectCount}r ${(s.rectBytes / 1024).toFixed(0)}KB` : '');
+      fpsEl.title =
+        `frame interval  p50 ${s.p50.toFixed(1)}ms  p95 ${s.p95.toFixed(1)}ms  p99 ${s.p99.toFixed(1)}ms  max ${s.max.toFixed(0)}ms\n` +
+        `jitter ${s.jitter.toFixed(1)}ms · stalls(>100ms) ${s.stalls} · dropped ${s.dropped}`;
       break;
+    }
 
     case 'cutText':
       receiveRemoteClipboard(String(msg.text == null ? '' : msg.text));
