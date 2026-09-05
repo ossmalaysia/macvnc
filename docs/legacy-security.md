@@ -9,7 +9,7 @@ For current policy and limitations, see [SECURITY.md](../SECURITY.md).
 ## Reporting a vulnerability
 
 Please report security issues privately via
-[GitHub Security Advisories](https://github.com/jazztong/macvnc/security/advisories/new)
+[GitHub Security Advisories](https://github.com/ossbusinessmy/macvnc/security/advisories/new)
 rather than a public issue. Include reproduction steps and the affected version or
 commit. Expect an acknowledgement within a few days; this is a personal-time project,
 so please allow reasonable time before public disclosure.

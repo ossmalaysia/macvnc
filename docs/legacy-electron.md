@@ -44,7 +44,7 @@ The result is free remote access to your own Mac, owned entirely by you — no a
 ### Option 1 — download an installer (no tools needed)
 
 Grab the file for your platform from the
-**[latest release](https://github.com/jazztong/macvnc/releases/latest)**:
+**[latest release](https://github.com/ossbusinessmy/macvnc/releases/latest)**:
 
 | Platform | File | Notes |
 |---|---|---|
@@ -67,7 +67,7 @@ Grab the file for your platform from the
 Needs [Node.js](https://nodejs.org) 20+ and git.
 
 ```bash
-git clone https://github.com/jazztong/macvnc.git
+git clone https://github.com/ossbusinessmy/macvnc.git
 cd macvnc
 npm install
 npm start
@@ -206,7 +206,7 @@ Full policy, threat model and scan results: **[SECURITY.md](../SECURITY.md)**. I
 
 Latest scan (2026-09-05): `npm audit` **0 vulnerabilities** (runtime + dev), one runtime dependency (`pako`), no secrets in tracked files. Electron was upgraded 38.8.6 → 44.2.0 to clear a HIGH advisory.
 
-Report vulnerabilities privately via [GitHub Security Advisories](https://github.com/jazztong/macvnc/security/advisories/new).
+Report vulnerabilities privately via [GitHub Security Advisories](https://github.com/ossbusinessmy/macvnc/security/advisories/new).
 
 ## License
 

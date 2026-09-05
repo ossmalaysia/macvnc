@@ -96,7 +96,7 @@ Provenance and third-party notices: THIRD_PARTY.md.
 Current application source and vendored dependencies: source/.
 Rebuild with Rust and MSVC/Windows SDK: cd source; cargo build --release --locked --offline -p macvnc-app
 
-Application source: https://github.com/jazztong/macvnc
+Application source: https://github.com/ossbusinessmy/macvnc
 FFmpeg binary source: $url
 Archive SHA256: $sha256
 FFmpeg corresponding build/source materials:
