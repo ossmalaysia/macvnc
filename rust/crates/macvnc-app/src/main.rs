@@ -504,29 +504,155 @@ impl eframe::App for App {
                 ui.hyperlink_to("Developed by AnchorSprint", "https://anchorsprint.com");
             });
         });
-        egui::CentralPanel::default().show(ctx,|ui| {
-            if let Some(texture)=&self.texture {
-                let avail=ui.available_size();let native=egui::vec2(self.size[0] as f32,self.size[1] as f32);let scale=(avail.x/native.x).min(avail.y/native.y);let size=native*scale;
-                let (_,rect)=ui.allocate_space(avail);let image_rect=egui::Rect::from_center_size(rect.center(),size);
-                let response=ui.put(image_rect,egui::Image::new((texture.id(),size)).sense(egui::Sense::click_and_drag()));
-                if self.pending_frame {self.presented.push_back(now);self.pending_frame=false;}
-                if self.connected && !self.cancelling {self.remote_input(ctx,&response);}
-            } else {ui.vertical_centered(|ui| {
-                ui.add_space(45.0);ui.heading("Connect to your Mac");ui.label("Native encrypted HP transport and HEVC playback");ui.add_space(18.0);
-                ui.add_enabled_ui(!self.connecting,|ui| {egui::Grid::new("connection").num_columns(2).spacing([16.0,14.0]).show(ui,|ui| {
-                    ui.label("Mac address");ui.add(egui::TextEdit::singleline(&mut self.profile.host).hint_text("IP address or hostname").desired_width(290.0));ui.end_row();
-                    ui.label("Port");ui.add(egui::TextEdit::singleline(&mut self.port).desired_width(290.0));ui.end_row();
-                    ui.label("Account name");ui.add(egui::TextEdit::singleline(&mut self.profile.username).desired_width(290.0));ui.end_row();
-                    ui.label("Password");ui.add(egui::TextEdit::singleline(&mut self.profile.password).password(true).desired_width(290.0));ui.end_row();
-                    ui.label("Keyboard");egui::ComboBox::from_id_salt("keyboard-profile").selected_text(if self.profile.profile=="native" {"Native"} else {"Ctrl → Command"}).show_ui(ui,|ui|{ui.selectable_value(&mut self.profile.profile,"ctrl-as-cmd".into(),"Ctrl → Command");ui.selectable_value(&mut self.profile.profile,"native".into(),"Native");});ui.end_row();
-                });ui.add_space(12.0);ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.remember,"Remember securely");ui.add_enabled(self.remember,egui::Checkbox::new(&mut self.profile.auto_connect,"Connect on launch"));
-                    if !self.remember {self.profile.auto_connect=false;}
-                });ui.add_space(10.0);if ui.add_sized([290.0,38.0],egui::Button::new("Connect with HP")).clicked(){self.connect();}
-                if ui.small_button("Forget saved connection").clicked(){match profile::forget(){Ok(())=>{self.profile.password.zeroize();self.profile=profile::Profile::default();self.port="5900".into();self.remember=false;self.status="Saved Rust connection cleared.".into();},Err(e)=>self.status=e}}
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(texture) = &self.texture {
+                let avail = ui.available_size();
+                let native = egui::vec2(self.size[0] as f32, self.size[1] as f32);
+                let scale = (avail.x / native.x).min(avail.y / native.y);
+                let size = native * scale;
+                let (_, rect) = ui.allocate_space(avail);
+                let image_rect = egui::Rect::from_center_size(rect.center(), size);
+                let response = ui.put(
+                    image_rect,
+                    egui::Image::new((texture.id(), size)).sense(egui::Sense::click_and_drag()),
+                );
+                if self.pending_frame {
+                    self.presented.push_back(now);
+                    self.pending_frame = false;
+                }
+                if self.connected && !self.cancelling {
+                    self.remote_input(ctx, &response);
+                }
+            } else {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(38.0);
+                    ui.label(
+                        egui::RichText::new("MACVNC")
+                            .size(13.0)
+                            .strong()
+                            .color(Color32::from_rgb(93, 205, 181)),
+                    );
+                    ui.add_space(8.0);
+                    ui.heading("Connect to your Mac");
+                    ui.label(
+                        egui::RichText::new("Secure, high-performance screen sharing")
+                            .color(Color32::from_gray(165)),
+                    );
+                    ui.add_space(24.0);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_width(430.0);
+                        ui.vertical(|ui| {
+                            ui.add_enabled_ui(!self.connecting, |ui| {
+                                ui.label(
+                                    egui::RichText::new("CONNECTION DETAILS")
+                                        .small()
+                                        .strong()
+                                        .color(Color32::from_gray(145)),
+                                );
+                                ui.add_space(10.0);
+                                ui.label("Mac address");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.profile.host)
+                                        .hint_text("192.168.1.10 or hostname")
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.label("Port");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.port)
+                                                .desired_width(95.0),
+                                        );
+                                    });
+                                    ui.add_space(16.0);
+                                    ui.vertical(|ui| {
+                                        ui.label("Account name");
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.profile.username)
+                                                .desired_width(305.0),
+                                        );
+                                    });
+                                });
+                                ui.add_space(10.0);
+                                ui.label("Password");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.profile.password)
+                                        .password(true)
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Keyboard");
+                                    egui::ComboBox::from_id_salt("keyboard-profile")
+                                        .selected_text(if self.profile.profile == "native" {
+                                            "Native"
+                                        } else {
+                                            "Ctrl → Command"
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.profile.profile,
+                                                "ctrl-as-cmd".into(),
+                                                "Ctrl → Command",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.profile.profile,
+                                                "native".into(),
+                                                "Native",
+                                            );
+                                        });
+                                });
+                                ui.add_space(14.0);
+                                ui.checkbox(&mut self.remember, "Remember securely");
+                                ui.add_enabled(
+                                    self.remember,
+                                    egui::Checkbox::new(
+                                        &mut self.profile.auto_connect,
+                                        "Connect on launch",
+                                    ),
+                                );
+                                if !self.remember {
+                                    self.profile.auto_connect = false;
+                                }
+                                ui.add_space(16.0);
+                                if ui
+                                    .add_sized(
+                                        [ui.available_width(), 42.0],
+                                        egui::Button::new(
+                                            egui::RichText::new("Connect securely").strong(),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.connect();
+                                }
+                                ui.add_space(8.0);
+                                if ui.small_button("Forget saved connection").clicked() {
+                                    match profile::forget() {
+                                        Ok(()) => {
+                                            self.profile.password.zeroize();
+                                            self.profile = profile::Profile::default();
+                                            self.port = "5900".into();
+                                            self.remember = false;
+                                            self.status = "Saved connection cleared.".into();
+                                        }
+                                        Err(e) => self.status = e,
+                                    }
+                                }
+                            });
+                        });
+                    });
+                    ui.add_space(16.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "HP mode is experimental · encrypted transport · HEVC video",
+                        )
+                        .small()
+                        .weak(),
+                    );
                 });
-                ui.add_space(18.0);ui.label(egui::RichText::new("HP is experimental. Frame assembly and compatibility are under active development.").small().weak());
-            });}
+            }
         });
         ctx.request_repaint_after(Duration::from_millis(100));
         if self.smoke && self.started.elapsed() > self.smoke_duration {
