@@ -1,0 +1,70 @@
+import { FrameMetrics } from '../rfb/metrics.js';
+  // 4 tiles decode per SOURCE frame — count source frames, not tiles.
+  const metrics = new FrameMetrics({ tiles: 4, stallMs: 100 });
+  const canvas = document.getElementById('screen');
+  const ctx = canvas.getContext('2d');
+  const hud = document.getElementById('hud');
+  let frames = 0, decErrors = 0, fed = 0, gotKey = false, lastW = 0, lastH = 0;
+  let fpsT = performance.now(), fpsN = 0, fps = 0;
+  const TILES = 4;
+  let tileIdx = 0;   // frames decode in tile order (0..3) per source frame
+
+  let decoder = null;
+  function ensureDecoder() {
+    if (decoder && decoder.state !== 'closed') return decoder;
+    decoder = new VideoDecoder({
+      output: (frame) => {
+        const tw = frame.displayWidth, th = frame.displayHeight;
+        // Each decoded frame is one horizontal tile; stack TILES of them vertically.
+        if (tw !== lastW || th !== lastH) {
+          lastW = tw; lastH = th;
+          canvas.width = tw; canvas.height = th * TILES;
+        }
+        ctx.drawImage(frame, 0, (tileIdx % TILES) * th);
+        tileIdx++;
+        frame.close();
+        metrics.onDecoded(performance.now());
+        frames++; fpsN++;
+        const now = performance.now();
+        if (now - fpsT >= 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; }
+      },
+      error: (e) => { decErrors++; metrics.onDropped(1); hud.textContent = 'decoder error: ' + e.message; },
+    });
+    // hev1 + inline VPS/SPS/PPS (Annex-B): the decoder reads real params from the stream.
+    try {
+      decoder.configure({ codec: 'hev1.4.10.L153.90', optimizeForLatency: true, hardwareAcceleration: 'no-preference' });
+    } catch (e) { hud.textContent = 'configure failed: ' + e.message; }
+    return decoder;
+  }
+
+  function onAu(au) {
+    if (!au || !au.chunks) return;
+    if (!gotKey && !au.isKey) return;      // must start on a keyframe
+    if (au.isKey) gotKey = true;
+    const dec = ensureDecoder();
+    try {
+      dec.decode(new EncodedVideoChunk({
+        type: au.isKey ? 'key' : 'delta',
+        timestamp: au.timestamp >>> 0,
+        data: au.chunks,
+      }));
+      fed++;
+    } catch (e) { decErrors++; hud.textContent = 'decode threw: ' + e.message; }
+  }
+
+  window.addEventListener('message', (ev) => {
+    const d = ev.data;
+    if (!d || typeof d !== 'object') return;
+    if (d.type === 'hp-au') onAu(d.au);
+    else if (d.type === 'hp-status') hud.dataset.status = d.text;
+  });
+
+  setInterval(() => {
+    const m = metrics.summary();
+    hud.textContent =
+      `HP HEVC  ${lastW}x${lastH * TILES}   (tile ${lastW}x${lastH})\n` +
+      `SOURCE ${m.fps.toFixed(1)} fps   ${frames} pics decoded -> ${m.frames} frames\n` +
+      `p50 ${m.p50.toFixed(1)}ms  p95 ${m.p95.toFixed(1)}ms  p99 ${m.p99.toFixed(1)}ms  max ${m.max.toFixed(0)}ms\n` +
+      `jitter ${m.jitter.toFixed(1)}ms  stalls ${m.stalls}  dropped ${m.dropped}  decErr ${decErrors}` +
+      (hud.dataset.status ? `\n${hud.dataset.status}` : '');
+  }, 250);

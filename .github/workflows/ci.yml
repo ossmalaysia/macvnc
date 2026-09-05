@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-published advisory in a dependency surfaces without a push.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The protocol core is dependency-light and the tests never touch the
+      # network or Electron, so a plain install is enough.
+      - run: npm ci
+        env:
+          # Electron's postinstall downloads a ~100MB binary we don't need for tests.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm test
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      # Fail the build on a high/critical advisory in anything we ship or build with.
+      - name: npm audit (high+)
+        run: npm audit --audit-level=high
+
+  purity:
+    name: Protocol core stays portable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # src/rfb/** must run unchanged in Node AND a browser worker: no Electron,
+      # no node: builtins, no Buffer. This is what keeps it headlessly testable.
+      - name: No Node/Electron-only APIs in src/rfb
+        run: |
+          if grep -rnE "(^|[^_a-zA-Z])require\s*\(|from\s+['\"](electron|net|fs|zlib|crypto|dgram|node:[a-z]+)['\"]" src/rfb/; then
+            echo "::error::src/rfb/** must not import Electron or node: builtins"
+            exit 1
+          fi
+          # Ignore comment lines — several of them mention "no Buffer" by design.
+          if grep -rn "\bBuffer\b" src/rfb/ --include=*.js \
+             | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)'; then
+            echo "::error::src/rfb/** must use Uint8Array, not Buffer"
+            exit 1
+          fi
+          echo "src/rfb/ is portable"
+
+  secrets:
+    name: No committed secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tracked files
+        run: |
+          if git ls-files | xargs grep -nEI "BEGIN (RSA|OPENSSH|PRIVATE) KEY|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}" 2>/dev/null; then
+            echo "::error::possible credential committed"
+            exit 1
+          fi
+          echo "no secrets found"

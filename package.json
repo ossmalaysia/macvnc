@@ -22,7 +22,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^38.1.2"
+    "electron": "^44.2.0"
   },
   "dependencies": {
     "pako": "^2.1.0"

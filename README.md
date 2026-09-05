@@ -108,7 +108,44 @@ The net effect: on a LAN this is tuned about as far as **standard** Screen Shari
 
 Be clear about the ceiling. Standard VNC is **demand-driven**: the client asks, the Mac sends one frame, repeat — one frame per network round trip. And the standard-RFB tricks that make clients like [TurboVNC](https://github.com/TurboVNC/turbovnc) fast (Tight + JPEG, adaptive quality) **don't help against a Mac** — Apple's `screensharingd` only sends Raw / CopyRect / zlib / ZRLE, never Tight. So a full-screen video or a fast drag of a large window will show the protocol's limits. That's structural, not a bug.
 
-**The real path to commercial-tool smoothness is a different protocol.** Apple's own *High Performance* Screen Sharing doesn't send rectangles at all — it streams **HEVC (H.265) 4:4:4 video over UDP/SRTP**, hardware-decoded, with no per-frame round trip. That's why Apple's Screen Sharing.app and tools like TeamViewer feel smoother. Implementing it is a large undertaking (UDP, SRTP encryption, HEVC decode) and Apple's native mode requires Apple Silicon + macOS Sonoma on both ends — but it has been reverse-engineered (see [iShareScreen](https://github.com/renegadelink/iShareScreen)), so it's a viable future direction rather than a dead end. Contributions welcome.
+**The real path to commercial-tool smoothness is a different protocol.** Apple's own *High Performance* Screen Sharing doesn't send rectangles at all — it streams **HEVC (H.265) 4:4:4 video over UDP/SRTP**, hardware-decoded, with no per-frame round trip. That's why Apple's Screen Sharing.app and tools like TeamViewer feel smoother.
+
+### High Performance (HEVC) mode — experimental, incomplete
+
+An implementation lives in `src/rfb-hp/`. It is **developer-only**, gated behind the
+`VNC_HP_PROBE` environment variable, and **does not render a correct picture yet**.
+Be clear about what is and isn't proven, measured against a live Apple-Silicon Mac:
+
+| Stage | Status |
+|---|---|
+| Reaching HP mode over the existing type-30 auth (no SRP needed) | ✅ proven |
+| AES-128-CBC encrypted control channel (both directions) | ✅ proven |
+| Virtual display + metadata (`0x451`/`0x453`/`0x455`/`0x456`) | ✅ decrypted |
+| `0x1c` media negotiation — the Mac starts streaming | ✅ proven |
+| SRTP decrypt | ✅ **7791/7791 packets, 0 HMAC failures** |
+| HEVC decode via WebCodecs | ✅ real pixels decode |
+| **Tile grouping + compositing** | ❌ **broken — the image is wrong** |
+
+The failure is specific and understood: the depacketizer assumes four *equal
+horizontal bands* grouped by matching RTP timestamp. Live traffic contradicts that —
+the four tile SSRCs carry wildly uneven packet counts (e.g. `228 / 311 / 969 / 6283`),
+only ~57 access units are assembled from ~7800 packets, and the composited output
+repeats one strip four times instead of showing four distinct regions. **The tile
+model is wrong**; fixing it means re-deriving how SSRCs map to screen regions rather
+than inferring it.
+
+So: the protocol, crypto and transport are demonstrably correct; the *rendering* is
+not. Don't use HP mode expecting a working remote desktop. Contributions welcome —
+see [`docs/hp-mode/`](docs/hp-mode/) for byte-level blueprints of every component.
+
+### Other known limitations
+
+- **RFB traffic is unencrypted** on the wire (see [SECURITY.md](SECURITY.md)). LAN or tunnel only.
+- **No sandbox** on the renderer (`sandbox: false`) — a deliberate, documented trade-off.
+- Standard-VNC mode is **view + control only**: no file transfer, no audio, no multi-monitor selection, no session recording.
+- `Ctrl+Alt+Del` and `Win+L` cannot be forwarded — Windows reserves them.
+- Tested against Apple Screen Sharing only. Other VNC servers (TightVNC, x11vnc, …) are **not** supported: the client requires Apple security type 30 and does not implement standard VNC password auth.
+- Tested on Windows against one Apple-Silicon Mac (macOS Sonoma+). Linux and older/Intel Macs are unverified.
 
 ## Related projects and prior art
 
@@ -127,11 +164,20 @@ npm start     # launch the app
 
 The protocol core (`src/rfb/`) is tested against synthetic wire fixtures built from the verified byte layouts, including a "feed every fixture one byte at a time" test that catches TCP-segmentation bugs. See [`CLAUDE.md`](CLAUDE.md) for the architecture and the rules that keep the core portable.
 
-## Security notes
+## Security
 
-- The password is encrypted at rest with Electron's `safeStorage` (Windows DPAPI / macOS Keychain / libsecret), tied to your OS account. Only a base64 ciphertext is written to disk.
-- Every failed login is a **real** failed login against your macOS account. The app never auto-retries a rejected password, to avoid tripping account lockout.
-- RFB itself is unencrypted on the wire. Use this on a trusted local network, or tunnel it over SSH / a VPN, not across the open internet.
+Full policy, threat model and scan results: **[SECURITY.md](SECURITY.md)**. In short:
+
+- **Your credentials go to your Mac and nowhere else.** No telemetry, no analytics, no cloud, no outbound requests. The password is encrypted at rest via Electron `safeStorage` (DPAPI/Keychain/libsecret) and is never logged.
+- **RFB traffic is unencrypted on the wire** — only the auth handshake is protected. Use a trusted LAN or an SSH/VPN tunnel; never expose port 5900 to the internet.
+- Every failed login is a **real** failed login on that Mac, so the client never auto-retries a rejected password.
+- Hardened renderers: `contextIsolation` on, `nodeIntegration` off, strict CSP, no inline scripts, no remote code. **`sandbox: false` is a known, documented gap.**
+- All wire-supplied lengths are bounds-capped before allocation; decoders clip to framebuffer bounds; SRTP rejects packets failing HMAC.
+- **HP mode is reverse-engineered and unaudited.** Developer-only, off by default.
+
+Latest scan (2026-09-05): `npm audit` **0 vulnerabilities** (runtime + dev), one runtime dependency (`pako`), no secrets in tracked files. Electron was upgraded 38.8.6 → 44.2.0 to clear a HIGH advisory.
+
+Report vulnerabilities privately via [GitHub Security Advisories](https://github.com/jazztong/macvnc/security/advisories/new).
 
 ## License
 
