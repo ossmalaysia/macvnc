@@ -219,7 +219,10 @@ impl App {
         {
             response.request_focus();
         }
-        if !ctx.input(|i| i.focused) || !response.has_focus() {
+        // egui uses Tab for local focus traversal and can clear the canvas focus
+        // before delivering the event. Keep capturing keyboard input while the
+        // pointer is over the remote view so Tab reaches the Mac as 0xff09.
+        if !ctx.input(|i| i.focused) || (!response.has_focus() && !response.hovered()) {
             self.release_input();
             return;
         }
