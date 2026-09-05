@@ -149,21 +149,36 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
   const udpCtrl = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   const udpVideo = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   let videoPkts = 0, videoRtp = 0, videoRtcp = 0, firstFrom = null;
-  let srtp = null, srtpOk = 0, srtpFail = 0, aus = 0, keyAus = 0, depkt = null;
+  let srtp = null, srtpOk = 0, srtpFail = 0, aus = 0, keyAus = 0;
   const ssrcSeen = new Map();
-  const tileDepkts = new Map(); // ssrc -> HevcDepacketizer(1)
-  const tileOf = new Map();     // ssrc -> tile index
-  let srtcp = null, ourVideoSsrc = 0;
+  // ONE depacketizer for the whole session. It emits PER-TILE access units
+  // (each tagged with tileIdx) that all feed ONE shared VideoDecoder — Apple's
+  // stream has cross-tile POC references, so per-tile DPBs decode to garbage
+  // (hevc.py:1-24). See src/rfb-hp/depacketize.js for the full rationale.
+  const depkt = new HevcDepacketizer(4);
+  const seenSsrcs = new Set();
+  let srtcp = null, ourVideoSsrc = 0, baseSsrc = 0;
   const firSeq = new Map();     // ssrc -> FIR sequence number
-  const firedAt = new Map();    // ssrc -> last FIR time (throttle)
-  const gotKeyForSsrc = new Set();
-  // Re-FIR any tile that has sent packets but not yet a keyframe (Apple can be lazy).
+  let lastFir = 0, sawKey = false, settled = false;
+  // Packet loss leaves a corrupt region frozen until the next IDR, and Apple
+  // only emits ~1 IDR / 10s unprompted. Track RTP sequence continuity per tile
+  // and FIR on a gap so the damage is repaired instead of persisting
+  // (session.py:745-770 does the same from its decode-error path).
+  const expectSeq = new Map();  // ssrc -> next expected seq
+  const lastLossFir = new Map();
+  let lossEvents = 0;
+  // Apple's HP encoder only ever emits IDRs on the base SSRC (= tile 0);
+  // tiles 1-3 carry P-frames that reference the shared DPB, and FIR-ing them
+  // waits for IDRs Apple architecturally never sends (hevc.py:645-652). So
+  // re-FIR the BASE tile only, until the first keyframe lands.
+  // Keep asking until an IDR lands AFTER every tile is known. An IDR that
+  // arrives while tiles 1-3 are still unregistered re-roots a DPB those tiles
+  // never contributed to, so their first P-frames reference pictures the
+  // pre-IDR gate discarded — silent drift that no later P-frame repairs,
+  // because Apple emits only ~1 unprompted IDR per 10s.
   const reFir = setInterval(() => {
-    for (const ssrc of tileDepkts.keys()) {
-      if (gotKeyForSsrc.has(ssrc)) continue;
-      const last = firedAt.get(ssrc) || 0;
-      if (Date.now() - last > 700) { requestIdr(ssrc); firedAt.set(ssrc, Date.now()); }
-    }
+    if (settled || !baseSsrc) return;
+    if (Date.now() - lastFir > 700) { requestIdr(baseSsrc); lastFir = Date.now(); }
   }, 350);
   function requestIdr(targetSsrc) {
     if (!srtcp) return;
@@ -183,25 +198,40 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     if (!dec) { srtpFail++; return; }
     srtpOk++;
     ssrcSeen.set(dec.ssrc, (ssrcSeen.get(dec.ssrc) || 0) + 1);
-    // Each SSRC is an INDEPENDENT HEVC stream (a horizontal screen band), decoded
-    // by its own context. So one depacketizer per SSRC, and a stable tile index
-    // assigned by ascending SSRC value (consecutive SSRCs = consecutive bands).
-    let td = tileDepkts.get(dec.ssrc);
-    if (!td) {
-      td = new HevcDepacketizer(1);
-      tileDepkts.set(dec.ssrc, td);
-      // Apple often emits an IDR only for tile 0; FIR the newly-seen tile so it
-      // sends its own keyframe, otherwise its decoder never starts.
-      requestIdr(dec.ssrc);
-      firedAt.set(dec.ssrc, Date.now());
+    // Tile 0 == lowest SSRC (burst.py:98-99). Track it so FIR targets the only
+    // tile Apple will actually key.
+    if (!seenSsrcs.has(dec.ssrc)) {
+      seenSsrcs.add(dec.ssrc);
+      if (!baseSsrc || dec.ssrc < baseSsrc) {
+        baseSsrc = dec.ssrc;
+        if (!sawKey) { requestIdr(baseSsrc); lastFir = Date.now(); }
+      }
     }
+    // Sequence-gap detection: a hole means a NAL is missing, so every later
+    // P-frame in that region references a picture we never decoded.
+    const exp = expectSeq.get(dec.ssrc);
+    if (exp !== undefined && dec.seq !== exp && ((dec.seq - exp) & 0xffff) < 0x8000) {
+      lossEvents++;
+      const last = lastLossFir.get(dec.ssrc) || 0;
+      if (Date.now() - last > 1000) { requestIdr(dec.ssrc); lastLossFir.set(dec.ssrc, Date.now()); }
+    }
+    expectSeq.set(dec.ssrc, (dec.seq + 1) & 0xffff);
+
     try {
-      const au = td.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
-      if (au) {
-        aus++; if (au.isKey) { keyAus++; gotKeyForSsrc.add(dec.ssrc); }
-        // Recompute tile index each emit: it can shift as new SSRCs appear.
-        const tileIdx = [...tileDepkts.keys()].sort((a, b) => a - b).indexOf(dec.ssrc);
-        if (onAu) onAu({ ...au, tileIdx, tiles: tileDepkts.size });
+      // dec.timestamp / dec.marker come straight off the RTP header. The marker
+      // bit is the authoritative end-of-access-unit signal (burst.py:128-133).
+      const first = depkt.push(dec.ssrc, dec.payload, dec.timestamp, dec.seq, dec.marker);
+      const ready = first ? [first, ...depkt.drain()] : depkt.drain();
+      for (const au of ready) {
+        aus++;
+        if (au.isKey) {
+          keyAus++;
+          sawKey = true;
+          // Only stop FIR-ing once this IDR re-rooted a DPB that all tiles
+          // were already feeding.
+          if (seenSsrcs.size >= 4) settled = true;
+        }
+        if (onAu) onAu(au);
       }
     } catch { /* depacketize error, keep going */ }
   });
@@ -332,6 +362,12 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
       audioOffer: audio.blob,
       videoOffer: video.blob,
       audioKeys, videoKeys, uuid, flags: 7,
+      // We advertise LTR by default but never send the RTCP APP acks Apple's
+      // encoder expects (session.py:1699). Unacked LTR makes the encoder
+      // reference frames it believes we confirmed, so damaged regions never
+      // repair. VNC_HP_NO_LTR=1 negotiates plain P-frames instead, which
+      // isolates that as the cause.
+      ltrpEnabled: !process.env.VNC_HP_NO_LTR,
     });
     socket.write(rl.encrypt(body));
     log(`[phase3] sent 0x1c MediaStreamOptions offer (${body.length}B), video ssrc=${video.ssrc}`);
@@ -339,7 +375,6 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     srtp = new SrtpReceiver(videoKeys.key2);
     srtcp = new SrtcpSender(videoKeys.key1); // send FIRs with our send key
     ourVideoSsrc = video.ssrc >>> 0;
-    // Per-SSRC depacketizers are created lazily in the packet handler.
 
     // Read the 0x1c answer (and drain more metadata) for a few seconds while UDP counts.
     let answer = null;
@@ -372,7 +407,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     else if (streaming) log('[phase4] >>> RTP arrives but SRTP MAC fails — key2 selection or IV/HMAC formula.');
     if (aus > 0) log('[phase5] >>> Depacketizer produced HEVC access units — ready to feed WebCodecs.');
     cleanup();
-    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, srtpOk, srtpFail, aus, keyAus, answer, layout };
+    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, srtpOk, srtpFail, aus, keyAus, lossEvents, answer, layout };
   } catch (err) {
     cleanup();
     log('[phase3] error: ' + (err && err.message));

@@ -58,6 +58,11 @@ export class SrtpReceiver {
 
     const bodyLen = packet.length - AUTH_TAG_LEN;
     const seq = (packet[2] << 8) | packet[3];
+    const timestamp = packet.readUInt32BE(4);
+    // RTP marker bit: authoritative "last packet of this tile's access unit"
+    // (burst.py:132 gates AU completion on it). Without it the depacketizer can
+    // only guess via timestamp advancement, which delays every frame by one.
+    const marker = (packet[1] & 0x80) !== 0;
     const ssrc = packet.readUInt32BE(8);
 
     const state = this._states.get(ssrc);
@@ -82,7 +87,7 @@ export class SrtpReceiver {
       const res = this._tryDecrypt(packet, bodyLen, seq, ssrc, roc);
       if (res !== null) {
         this._updateState(ssrc, roc, seq);
-        return { ssrc, seq, pt: packet[1] & 0x7f, payload: res };
+        return { ssrc, seq, timestamp, marker, pt: packet[1] & 0x7f, payload: res };
       }
     }
     return null;

@@ -1,19 +1,32 @@
 // HEVC RTP depacketizer for Apple "High Performance" screen sharing.
 //
-// Turns SRTP-decrypted RTP payloads (4 SSRC tile streams) into HEVC access
-// units ready for a single WebCodecs VideoDecoder configured in Annex-B mode.
+// Turns SRTP-decrypted RTP payloads (4 SSRC tile streams) into PER-TILE HEVC
+// access units, each tagged with its tile index, for ONE shared VideoDecoder.
+//
+// Architecture (hevc.py:1-24) — the part that is easy to get wrong twice:
+//   Apple's stream has cross-tile POC references: a P-frame in tile N may
+//   reference a POC assigned to a picture in tile M != N. Giving each tile its
+//   own decoder gives each tile its own DPB, so those references resolve to
+//   nothing and the output is garbage. The ONLY correct architecture is a
+//   single decoder fed all tiles' access units in (timestamp, tile) arrival
+//   order, with output frames routed back to their tile via the PTS attached
+//   on input (hevc.py:697-703 -> _pts_to_tile; hevc.py:759).
+//
+//   Equally, the four tiles must NOT be concatenated into one chunk: each
+//   tile's slice sets first_slice_segment_in_pic_flag, so the decoder sees N
+//   separate pictures and emits N frames for one chunk. One AU == one tile.
 //
 // Ported from the Python reference:
-//   - nalu.py:28-80   reassemble_group() — AP/FU/single-NAL byte layout + Apple's
-//                     RFC 7798 DONL deviation (this is where the FU/DONL splitting
-//                     actually lives; hevc.py consumes its output).
-//   - nalu.py:83-103  first_donl() — DONL offset per structure.
-//   - hevc.py:1-24    single-shared-context rationale (all tiles -> one decoder).
-//   - hevc.py:344-368 round-robin/tile-interleaved feed order (here: SSRC order
-//                     within one whole-frame chunk).
-//   - hevc.py:502-503,653-669,662-690  _dpb_has_idr gate + "any IDR resets all
-//                     tiles" + drop pre-IDR P-frames.
-//   - hevc.py:692-699 Annex-B start-code packetization (_NAL_START_CODE + NAL).
+//   - nalu.py:28-80    reassemble_group() — AP/FU/single-NAL byte layout plus
+//                      Apple's RFC 7798 DONL deviation.
+//   - nalu.py:83-103   first_donl() — DONL offset per structure.
+//   - burst.py:94-103  ssrc_to_tile — ascending SSRC == ascending tile index.
+//   - burst.py:128-133 AU completion gated on the RTP marker bit.
+//   - hevc.py:653-670  "an IDR arriving for ANY tile resets the DPB for ALL
+//                      tiles" — the pre-IDR gate is GLOBAL, never per-tile.
+//                      Apple architecturally never emits IDRs for tiles 1-3
+//                      (hevc.py:645-652), so a per-tile gate starves them.
+//   - hevc.py:692-699  Annex-B start-code packetization.
 //   - hevc.py:1172-1180 _is_decodable_nalu() filter.
 //
 // Apple's RFC 7798 DONL deviations (nalu.py module doc):
@@ -29,11 +42,23 @@ const NAL_FRAGMENTATION = 49;
 // `description` in VideoDecoder.configure() selects this Annex-B mode.
 const START_CODE = Buffer.from([0x00, 0x00, 0x00, 0x01]);
 
-// Flush an incomplete/stalled frame after this long so one lost tile (UDP loss
-// drops the marker / next-frame packet) can't wedge the pipeline forever.
+// Flush an access unit whose marker packet was lost, so UDP loss on one tile
+// cannot wedge that tile forever.
 const FLUSH_TIMEOUT_MS = 200;
-// Hard cap on buffered frames; forces the oldest out if completion never fires.
-const MAX_PENDING = 16;
+// Hard cap on in-flight (ssrc, ts) groups; forces the oldest out.
+const MAX_PENDING = 32;
+// How long to wait for the full SSRC group before trusting tile indices. Tile
+// index is assigned by ascending SSRC, so a tile seen before its lower-numbered
+// siblings would be mis-indexed; the IDR burst carries all tiles well inside
+// this window (burst.py waits for the primary SSRC group the same way).
+const TILE_MAP_GRACE_MS = 750;
+// How long a completed access unit waits in the reorder buffer for its
+// same-timestamp siblings. The four tiles are independent UDP streams, so they
+// arrive interleaved; hevc.py:3-4 requires them fed in (timestamp, tile) order
+// because cross-tile POC references break if a picture is decoded before the
+// one it references. One frame interval at 60fps is ~17ms, so this window
+// reorders within a frame without adding a frame of latency.
+const REORDER_WINDOW_MS = 40;
 
 function nalType(buf) {
   // HEVC 6-bit nal_unit_type: byte0 >> 1 & 0x3F.
@@ -43,9 +68,7 @@ function nalType(buf) {
 // True if this NAL should ride in the WebCodecs chunk. Keeps VPS/SPS/PPS
 // (32-34, needed in-band before the IDR) and single-slice VCL NALs; drops SEI/
 // AUD/EOS/EOB/FD (35-40+) and slices missing first_slice_segment_in_pic_flag.
-// (hevc.py:1172-1180 filters nt>31 + the first-slice bit for the decode feed;
-// here we additionally *retain* the 32-34 param sets that path handled via
-// extradata.)
+// (hevc.py:1172-1180.)
 function includeNal(nal) {
   if (nal.length < 2) return false;
   const nt = nalType(nal);
@@ -65,7 +88,7 @@ function tsAfter(a, b) {
   return ((a - b) >>> 0) < 0x80000000;
 }
 
-// Reassemble one tile's timestamp-ordered payload list into clean NALUs.
+// Reassemble one tile's sequence-ordered payload list into clean NALUs.
 // Direct port of nalu.py:28-80. Malformed entries dropped silently (UDP loss
 // makes that routine; the decoder errors on what survives).
 function reassembleGroup(payloads) {
@@ -152,47 +175,70 @@ function sortBySeq(packets) {
 }
 
 export class HevcDepacketizer {
-  constructor(tileCount = 4) {
+  constructor(tileCount = 4, { now = () => Date.now() } = {}) {
     this.tileCount = tileCount;
-    // ts -> { ts, t0, tiles: Map<ssrc, {packets:[{seq,payload}]}>, markers:Set<ssrc> }
+    this._now = now;
+    // "ssrc:ts" -> { ssrc, ts, t0, packets: [{seq,payload}], marker }
     this._pending = new Map();
     // Highest RTP ts seen per ssrc — a strictly-newer ts on a tile proves that
-    // tile has finished emitting for every older ts (no marker bit in push()).
+    // tile finished emitting for every older ts, even if its marker was lost.
     this._highestTs = new Map();
-    // WebCodecs requires the first chunk after configure() to be a key frame,
-    // and Apple emits IDRs on tile 0 only. Drop every AU until the first IDR
-    // (mirrors the _dpb_has_idr gate, hevc.py:502-503,662-690).
+    // Ascending SSRC == ascending tile index (burst.py:98-99).
+    this._ssrcs = [];
+    this._tileOf = new Map();
+    this._firstSeenAt = null;
+    // GLOBAL pre-IDR gate. Apple emits IDRs on tile 0 only; an IDR on ANY tile
+    // re-roots the shared DPB for ALL tiles (hevc.py:653-670). A per-tile gate
+    // waits forever for IDRs tiles 1-3 never receive.
     this._sawKey = false;
-    // Monotonic per-emitted-AU timestamp (mirrors _next_pts, hevc.py:697-703).
+    // Monotonic per-emitted-AU PTS. The renderer maps pts -> tileIdx to route
+    // each decoded frame back to its band (hevc.py:697-703).
     this._nextPts = 0;
-    // AUs completed but not yet returned (a stall/timeout flush can complete
-    // several at once; push() returns the oldest and queues the rest).
+    // Completed-but-unordered AUs, awaiting their same-timestamp siblings.
+    this._reorder = [];
+    this._newestCompleteTs = null;
     this._ready = [];
   }
 
-  // Feed one decrypted RTP payload. `marker` (RTP marker bit, optional) is the
-  // authoritative "last packet of this tile's AU" signal when available; if
-  // omitted the depacketizer falls back to timestamp advancement.
-  // Returns the oldest completed AccessUnit, or null.
+  // Assign/refresh tile indices from the SSRCs seen so far.
+  _noteSsrc(ssrc) {
+    if (this._tileOf.has(ssrc)) return;
+    this._ssrcs.push(ssrc);
+    this._ssrcs.sort((a, b) => a - b);
+    this._tileOf.clear();
+    this._ssrcs.forEach((s, i) => this._tileOf.set(s, i));
+  }
+
+  // True once tile indices can be trusted: either the whole SSRC group is
+  // known, or the grace window expired (a display with fewer bands).
+  _tileMapSettled() {
+    if (this._ssrcs.length >= this.tileCount) return true;
+    return this._firstSeenAt !== null
+      && this._now() - this._firstSeenAt >= TILE_MAP_GRACE_MS;
+  }
+
+  // Feed one decrypted RTP payload. `marker` (RTP marker bit) is the
+  // authoritative end-of-access-unit signal (burst.py:128-133); without it the
+  // depacketizer falls back to timestamp advancement, one frame later.
+  // Returns the oldest ready AccessUnit, or null. Use drain() for the rest.
   push(ssrc, payload, timestamp, seq, marker) {
     ssrc = ssrc >>> 0;
     timestamp = timestamp >>> 0;
     seq &= 0xffff;
     const pay = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
 
+    if (this._firstSeenAt === null) this._firstSeenAt = this._now();
+    this._noteSsrc(ssrc);
+
     if (pay.length >= 2) {
-      let group = this._pending.get(timestamp);
+      const key = `${ssrc}:${timestamp}`;
+      let group = this._pending.get(key);
       if (!group) {
-        group = { ts: timestamp, t0: Date.now(), tiles: new Map(), markers: new Set() };
-        this._pending.set(timestamp, group);
+        group = { ssrc, ts: timestamp, t0: this._now(), packets: [], marker: false };
+        this._pending.set(key, group);
       }
-      let tile = group.tiles.get(ssrc);
-      if (!tile) {
-        tile = { packets: [] };
-        group.tiles.set(ssrc, tile);
-      }
-      tile.packets.push({ seq, payload: pay });
-      if (marker) group.markers.add(ssrc);
+      group.packets.push({ seq, payload: pay });
+      if (marker) group.marker = true;
     }
 
     const prev = this._highestTs.get(ssrc);
@@ -204,84 +250,103 @@ export class HevcDepacketizer {
     return this._ready.length ? this._ready.shift() : null;
   }
 
-  // Drain every currently-ready AccessUnit (in emission order).
-  drain() {
+  // Drain every currently-ready AccessUnit, in emission order. Pass
+  // { flush: true } at teardown to also release AUs still inside their reorder
+  // window; during streaming the window must be respected or ordering breaks.
+  drain({ flush = false } = {}) {
     this._collect();
+    if (flush) this._release(this._now(), true);
     const out = this._ready;
     this._ready = [];
     return out;
   }
 
-  // Move completed (or timed-out) pending frames into _ready, oldest first,
-  // preserving strict timestamp order.
+  // Move completed (or timed-out) groups into _ready. Emission is in arrival
+  // order, which is naturally (timestamp, tile) interleaved — the same order
+  // the reference's RX threads enqueue in (session.py:588).
   _collect() {
-    if (this._pending.size === 0) return;
-    const now = Date.now();
-    // Sort pending timestamps ascending (wraparound-safe).
-    const order = [...this._pending.keys()].sort((a, b) => (tsAfter(a, b) ? 1 : -1));
+    if (this._pending.size === 0 || !this._tileMapSettled()) return;
+    const now = this._now();
     const overflow = this._pending.size > MAX_PENDING;
+    let oldestKey = null;
+    let oldestT0 = Infinity;
+    for (const [key, group] of this._pending) {
+      if (group.t0 < oldestT0) { oldestT0 = group.t0; oldestKey = key; }
+    }
 
-    for (let i = 0; i < order.length; i++) {
-      const ts = order[i];
-      const group = this._pending.get(ts);
-      const complete = this._isComplete(group);
+    for (const [key, group] of [...this._pending]) {
+      const hi = this._highestTs.get(group.ssrc);
+      const advanced = hi !== undefined && tsAfter(hi, group.ts);
       const stale = now - group.t0 >= FLUSH_TIMEOUT_MS;
-      // Force the very oldest out if we're over the buffer cap.
-      const forced = overflow && i === 0;
+      const forced = overflow && key === oldestKey;
 
-      if (complete || stale || forced) {
-        this._pending.delete(ts);
+      if (group.marker || advanced || stale || forced) {
+        this._pending.delete(key);
         const au = this._buildAccessUnit(group);
-        if (au) this._ready.push(au);
-      } else {
-        // Cannot emit a newer frame ahead of an incomplete older one.
-        break;
+        if (au) {
+          au._t = now;
+          this._reorder.push(au);
+          if (this._newestCompleteTs === null || tsAfter(au.rtpTimestamp, this._newestCompleteTs)) {
+            this._newestCompleteTs = au.rtpTimestamp;
+          }
+        }
       }
     }
+    this._release(now);
   }
 
-  _isComplete(group) {
-    if (group.tiles.size < this.tileCount) return false;
-    // Marker path: every present tile signalled end-of-AU.
-    if (group.markers.size >= this.tileCount) return true;
-    // No-marker path: every present tile has advanced to a newer timestamp,
-    // which guarantees each tile's contribution to this frame is fully in.
-    for (const ssrc of group.tiles.keys()) {
-      const hi = this._highestTs.get(ssrc);
-      if (hi === undefined || !tsAfter(hi, group.ts)) return false;
+  // Move AUs out of the reorder buffer into _ready, strictly ordered by
+  // (rtpTimestamp, tileIdx) — the feed order hevc.py:3-4 requires. An AU is
+  // eligible once a strictly newer timestamp has completed (so no earlier
+  // sibling can still arrive) or its reorder window expired.
+  _release(now, flush = false) {
+    if (this._reorder.length === 0) return;
+    const eligible = [];
+    const held = [];
+    for (const au of this._reorder) {
+      if (flush || now - au._t >= REORDER_WINDOW_MS) eligible.push(au);
+      else held.push(au);
     }
-    return true;
+    if (eligible.length === 0) return;
+    this._reorder = held;
+    eligible.sort((a, b) => (a.rtpTimestamp === b.rtpTimestamp
+      ? a.tileIdx - b.tileIdx
+      : (tsAfter(a.rtpTimestamp, b.rtpTimestamp) ? 1 : -1)));
+    for (const au of eligible) {
+      // PTS is assigned at release, not at build, so it stays monotonic in
+      // emission order — the renderer's pts -> tile map depends on that.
+      au.timestamp = this._nextPts++;
+      delete au._t;
+      this._ready.push(au);
+    }
   }
 
-  // Concatenate this frame's NALs across the 4 tiles in SSRC order (tile 0 =
-  // lowest SSRC first), each Annex-B start-code prefixed, into one chunk.
+  // Build ONE tile's access unit: its NALs, Annex-B framed, in a single chunk.
   _buildAccessUnit(group) {
-    const ssrcs = [...group.tiles.keys()].sort((a, b) => (a >>> 0) - (b >>> 0));
+    const ordered = sortBySeq(group.packets).map((p) => p.payload);
     const parts = [];
     let isKey = false;
 
-    for (const ssrc of ssrcs) {
-      const ordered = sortBySeq(group.tiles.get(ssrc).packets).map((p) => p.payload);
-      for (const nal of reassembleGroup(ordered)) {
-        if (!includeNal(nal)) continue;
-        if (isIdrType(nalType(nal))) isKey = true;
-        parts.push(START_CODE, nal);
-      }
+    for (const nal of reassembleGroup(ordered)) {
+      if (!includeNal(nal)) continue;
+      if (isIdrType(nalType(nal))) isKey = true;
+      parts.push(START_CODE, nal);
     }
 
     if (parts.length === 0) return null;
-    // Pre-IDR gate: WebCodecs' first chunk must be key, and Apple only IDRs on
-    // tile 0. Drop delta AUs until the first IDR re-roots the shared DPB.
+    // Global pre-IDR gate: WebCodecs' first chunk must be a keyframe, and no
+    // tile's P-frames are decodable until an IDR has rooted the shared DPB.
     if (!isKey && !this._sawKey) return null;
     if (isKey) this._sawKey = true;
 
     const buf = Buffer.concat(parts);
-    const pts = this._nextPts++;
     return {
       chunks: new Uint8Array(buf), // owned copy, safe to transfer to the renderer
       isKey,
-      timestamp: pts,
-      rtpTimestamp: group.ts, // source RTP ts, for the compositor if needed
+      tileIdx: this._tileOf.get(group.ssrc) ?? 0,
+      tiles: Math.max(this._ssrcs.length, 1),
+      timestamp: 0,            // assigned at release; routes frames to tiles
+      rtpTimestamp: group.ts,
     };
   }
 }

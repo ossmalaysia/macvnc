@@ -430,6 +430,49 @@ app.whenReady().then(() => {
         "window.addEventListener('unhandledrejection', e => console.log('PAGE REJECT: ' + (e.reason && (e.reason.message||e.reason))));"
       ).catch(() => {});
     });
+    // Electron 44 no longer fires 'console-message' for renderer logs, so the
+    // viewer publishes its counters via document.title and we poll them here.
+    const titlePoll = setInterval(() => {
+      if (hpWin.isDestroyed()) { clearInterval(titlePoll); return; }
+      const t = hpWin.getTitle();
+      if (t && t.startsWith('HP ')) console.log('[hp-view] ' + t);
+    }, 1000);
+    hpWin.on('closed', () => clearInterval(titlePoll));
+    // Visual proof: dump the composited canvas to a PNG mid-stream. Counters can
+    // look healthy while the picture is still wrong, so verify the pixels.
+    if (process.env.VNC_HP_SHOT) {
+      setTimeout(async () => {
+        if (hpWin.isDestroyed()) return;
+        try {
+          // Read the canvas directly. capturePage() goes through the GPU
+          // compositor and throws UnknownVizError on this box; toDataURL reads
+          // the 2D backing store, which is what we actually want to verify.
+          const dataUrl = await hpWin.webContents.executeJavaScript(
+            "document.getElementById('screen').toDataURL('image/png')");
+          fs.writeFileSync(process.env.VNC_HP_SHOT,
+            Buffer.from(String(dataUrl).split(',')[1], 'base64'));
+          // Per-band mean luminance proves each tile carries real content
+          // rather than a black or uniform fill.
+          const bands = await hpWin.webContents.executeJavaScript(`(() => {
+            const c = document.getElementById('screen');
+            const g = c.getContext('2d');
+            const n = 4, h = Math.floor(c.height / n), out = [];
+            for (let t = 0; t < n; t++) {
+              const d = g.getImageData(0, t * h, c.width, h).data;
+              let sum = 0, min = 255, max = 0;
+              for (let i = 0; i < d.length; i += 4 * 97) {
+                const v = (d[i] + d[i+1] + d[i+2]) / 3;
+                sum += v; if (v < min) min = v; if (v > max) max = v;
+              }
+              out.push({ tile: t, mean: +(sum / (d.length / (4 * 97))).toFixed(1), min, max });
+            }
+            return JSON.stringify(out);
+          })()`);
+          console.log('[hp] canvas bands ' + bands);
+          console.log('[hp] screenshot -> ' + process.env.VNC_HP_SHOT);
+        } catch (e) { console.log('[hp] screenshot failed: ' + e.message); }
+      }, 16000);
+    }
     hpWin.loadFile(path.join(__dirname, '..', 'renderer', 'hp-view.html'));
     hpWin.webContents.on('did-finish-load', async () => {
       try {
@@ -446,7 +489,7 @@ app.whenReady().then(() => {
         sock.on('connect', async () => {
           try {
             const res = await hp.runHpProbe(sock, {
-              host: rec.host, username: rec.username, password, runSeconds: 12,
+              host: rec.host, username: rec.username, password, runSeconds: 20,
               onAu: (au) => send('hp-au', au),
             }, (m) => { console.log('[hp] ' + m); send('hp-status', m); });
             console.log('[hp] RESULT ' + JSON.stringify({ ...res, answer: undefined }));
