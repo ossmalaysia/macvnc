@@ -13,6 +13,14 @@ channel, SRTP and packet assembly are Rust. HEVC decoding uses native FFmpeg 7
 shared libraries; there is no Electron, browser, Node or Python runtime in the
 Rust package.
 
+## Platform support
+
+The supported native package runs on **Windows x64** and controls a Mac running
+macOS Screen Sharing. A native macOS controller build is not available yet, so
+Mac-to-Mac control through MacVNC is currently unsupported. On two Macs, use
+Apple's built-in **Screen Sharing** app (Finder → Go → Connect to Server →
+`vnc://<mac-address>`) or Remote Management instead.
+
 **Status: experimental native build.** Live 1080p validation passes authentication,
 decoding and missing-reference checks; see the [validation report](docs/rust-validation-2026-09-05.md).
 An idle login-screen black-picture issue is still under investigation; reconnecting
