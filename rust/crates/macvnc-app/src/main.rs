@@ -213,7 +213,8 @@ impl App {
         self.pending_frame = true;
     }
     fn remote_input(&mut self, ctx: &egui::Context, response: &egui::Response) {
-        if response.clicked()
+        if response.hovered()
+            || response.clicked()
             || response.drag_started()
             || (response.hovered() && ctx.input(|i| i.pointer.any_pressed()))
         {
