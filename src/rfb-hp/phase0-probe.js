@@ -16,7 +16,7 @@ import { modPow, bytesToBigInt, bigIntToBytes } from '../rfb/crypto/dh.js';
 import { RecordLayer } from './record-layer.js';
 import { buildVideoOffer, buildAudioOffer } from './offers.js';
 import { makeKeyBlob, buildMediaStreamOptions, parseMediaStreamAnswer } from './mediastream.js';
-import { isRtcp, SrtpReceiver, SrtcpSender, buildFir, buildFirLegacy } from './srtp.js';
+import { isRtcp, SrtpReceiver, SrtcpSender, buildFir, buildFirLegacy, buildRr, buildEmptySr, buildPli, compoundWithRr } from './srtp.js';
 import { HevcDepacketizer } from './depacketize.js';
 
 // 0x1d SetDisplayConfiguration (308B): virtual display, dynamic resolution, 5 modes.
@@ -160,6 +160,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
   let srtcp = null, ourVideoSsrc = 0, baseSsrc = 0;
   const firSeq = new Map();     // ssrc -> FIR sequence number
   let lastFir = 0, sawKey = false, settled = false;
+  let depktErrors = 0, depktFirstError = null;
   // Packet loss leaves a corrupt region frozen until the next IDR, and Apple
   // only emits ~1 IDR / 10s unprompted. Track RTP sequence continuity per tile
   // and FIR on a gap so the damage is repaired instead of persisting
@@ -180,12 +181,36 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     if (settled || !baseSsrc) return;
     if (Date.now() - lastFir > 700) { requestIdr(baseSsrc); lastFir = Date.now(); }
   }, 350);
+  // Apple's AVConference peer treats a silent receiver as gone and stops
+  // sending video after ~25-30s. It expects an RR every ~0.5s, with an empty
+  // SR every 10th tick (session.py:90, :3682-3685). Without this the picture
+  // simply freezes mid-session.
+  let txTick = 0;
+  const rtcpKeepalive = setInterval(() => {
+    if (!srtcp || !ourVideoSsrc) return;
+    txTick++;
+    const sources = [...seenSsrcs];
+    const stats = new Map();
+    for (const ssrc of sources) stats.set(ssrc, srtp ? srtp.reportStats(ssrc) : {});
+    let pkt = buildRr(ourVideoSsrc, sources, stats);
+    if (txTick % 10 === 1) pkt = Buffer.concat([buildEmptySr(ourVideoSsrc), pkt]);
+    try { udpCtrl.send(srtcp.protect(pkt), 5900, host); } catch {}
+  }, 500);
+  // ALL RTCP goes to the CONTROL socket on port 5900, never the video port
+  // (session.py:4410-4412 _ctrl_dest_port = udp_ctrl_port or port). It must also
+  // be a compound packet starting with an RR, and pairs the AVPF FIR with a PLI
+  // and the legacy PT=192 FIR — screensharingd often ignores the AVPF form and
+  // answers the legacy one (session.py:4118-4130).
   function requestIdr(targetSsrc) {
-    if (!srtcp) return;
+    if (!srtcp || !ourVideoSsrc) return;
     const seq = ((firSeq.get(targetSsrc) || 0) + 1) & 0xff;
     firSeq.set(targetSsrc, seq);
-    const rtcp = Buffer.concat([buildFir(ourVideoSsrc, targetSsrc, seq), buildFirLegacy(targetSsrc)]);
-    try { udpVideo.send(srtcp.protect(rtcp), 5901, host); } catch {}
+    const rtcp = compoundWithRr(ourVideoSsrc, Buffer.concat([
+      buildFir(ourVideoSsrc, targetSsrc, seq),
+      buildPli(ourVideoSsrc, targetSsrc),
+      buildFirLegacy(targetSsrc),
+    ]));
+    try { udpCtrl.send(srtcp.protect(rtcp), 5900, host); } catch {}
   }
   udpVideo.on('message', (msg, rinfo) => {
     videoPkts++;
@@ -233,7 +258,13 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
         }
         if (onAu) onAu(au);
       }
-    } catch { /* depacketize error, keep going */ }
+    } catch (e) {
+      // Never swallow this silently: a repeating exception here stops all AU
+      // production while RTP keeps arriving, which looks exactly like the Mac
+      // hanging up.
+      depktErrors++;
+      if (!depktFirstError) depktFirstError = String((e && e.stack) || e);
+    }
   });
   await new Promise((res) => { let n = 0; const done = () => (++n === 2 && res());
     udpCtrl.bind(5900, () => { try { udpCtrl.setRecvBufferSize(4 << 20); } catch {} done(); });
@@ -243,8 +274,15 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     try { udpCtrl.send(Buffer.from([0]), 5900, host); } catch {}
     try { udpVideo.send(Buffer.from([0]), 5901, host); } catch {}
   }, 100);
-  const cleanup = () => { clearInterval(punch); clearInterval(reFir); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
+  const cleanup = () => { clearInterval(punch); clearInterval(reFir); clearInterval(rtcpKeepalive); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
   log(`UDP bound 5900/5901, firewall-punching ${host}`);
+
+  // Everything past the UDP bind runs under try/finally: an early throw (the
+  // CHECKPOINT A rekey desync, a read timeout) would otherwise leak the sockets
+  // bound to 5900/5901 and the punch/FIR intervals, so a retry in the same
+  // process binds with reuseAddr but the ORPHANED socket keeps receiving the
+  // stream — the retry sees no RTP at all.
+  try {
 
   // 1) version handshake
   const banner = await r.read(12);
@@ -406,12 +444,13 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     if (srtpOk > 0) log('[phase4] >>> SUCCESS: SRTP crypto is byte-correct on live packets.');
     else if (streaming) log('[phase4] >>> RTP arrives but SRTP MAC fails — key2 selection or IV/HMAC formula.');
     if (aus > 0) log('[phase5] >>> Depacketizer produced HEVC access units — ready to feed WebCodecs.');
-    cleanup();
-    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, srtpOk, srtpFail, aus, keyAus, lossEvents, answer, layout };
+    return { verdict: 'PASS', phase3: streaming ? 'streaming' : 'no-rtp', videoPkts, videoRtp, srtpOk, srtpFail, aus, keyAus, lossEvents, depktErrors, depktFirstError, depktStats: depkt.stats(), answer, layout };
   } catch (err) {
-    cleanup();
     log('[phase3] error: ' + (err && err.message));
     return { verdict: 'PASS', phase3: 'error', error: String(err && err.message), layout };
+  }
+  } finally {
+    cleanup();
   }
 }
 

@@ -198,6 +198,12 @@ export class HevcDepacketizer {
     this._reorder = [];
     this._newestCompleteTs = null;
     this._ready = [];
+    this._stats = { built: 0, emptyParts: 0, preIdrDropped: 0, released: 0 };
+  }
+
+  /** Internal counters, for diagnosing a stalled pipeline. */
+  stats() {
+    return { ...this._stats, pending: this._pending.size, reorder: this._reorder.length };
   }
 
   // Assign/refresh tile indices from the SSRCs seen so far.
@@ -316,6 +322,7 @@ export class HevcDepacketizer {
       // PTS is assigned at release, not at build, so it stays monotonic in
       // emission order — the renderer's pts -> tile map depends on that.
       au.timestamp = this._nextPts++;
+      this._stats.released++;
       delete au._t;
       this._ready.push(au);
     }
@@ -333,10 +340,11 @@ export class HevcDepacketizer {
       parts.push(START_CODE, nal);
     }
 
-    if (parts.length === 0) return null;
+    this._stats.built++;
+    if (parts.length === 0) { this._stats.emptyParts++; return null; }
     // Global pre-IDR gate: WebCodecs' first chunk must be a keyframe, and no
     // tile's P-frames are decodable until an IDR has rooted the shared DPB.
-    if (!isKey && !this._sawKey) return null;
+    if (!isKey && !this._sawKey) { this._stats.preIdrDropped++; return null; }
     if (isKey) this._sawKey = true;
 
     const buf = Buffer.concat(parts);

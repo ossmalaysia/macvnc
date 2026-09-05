@@ -482,20 +482,43 @@ app.whenReady().then(() => {
         console.log('[hp] host=' + rec.host + ' user=' + rec.username);
         const send = (ch, v) => { if (!hpWin.isDestroyed()) hpWin.webContents.send(ch, v); };
         const hp = await import('../rfb-hp/phase0-probe.js');
-        send('hp-status', 'warmup…');
-        await hp.warmupTcp(rec.host, rec.port || DEFAULT_PORT);
-        const sock = net.createConnection({ host: rec.host, port: rec.port || DEFAULT_PORT });
-        sock.setNoDelay(true);
-        sock.on('connect', async () => {
-          try {
-            const res = await hp.runHpProbe(sock, {
-              host: rec.host, username: rec.username, password, runSeconds: 20,
-              onAu: (au) => send('hp-au', au),
-            }, (m) => { console.log('[hp] ' + m); send('hp-status', m); });
-            console.log('[hp] RESULT ' + JSON.stringify({ ...res, answer: undefined }));
-          } catch (err) { console.log('[hp] PROBE ERROR: ' + (err && err.stack || err)); }
+        const runSeconds = Number(process.env.VNC_HP_SECONDS) || 20;
+        // The post-auth rekey scan intermittently desyncs on a metadata rect we
+        // cannot size, which aborts an otherwise healthy session. Authentication
+        // has already succeeded at that point (SecurityResult: 0), so retrying
+        // re-runs a handshake the Mac accepted — it is NOT a password attempt
+        // and cannot contribute to an account lockout. A rejected password is
+        // never retried.
+        const MAX_ATTEMPTS = 6;
+        const attempt = (n) => new Promise((resolve) => {
+          send('hp-status', n === 1 ? 'connecting…' : `retrying (${n}/${MAX_ATTEMPTS})…`);
+          const sock = net.createConnection({ host: rec.host, port: rec.port || DEFAULT_PORT });
+          sock.setNoDelay(true);
+          let settled = false;
+          const done = (v) => { if (!settled) { settled = true; try { sock.destroy(); } catch {} resolve(v); } };
+          sock.on('connect', async () => {
+            try {
+              const res = await hp.runHpProbe(sock, {
+                host: rec.host, username: rec.username, password, runSeconds,
+                onAu: (au) => send('hp-au', au),
+              }, (m) => { console.log('[hp] ' + m); send('hp-status', m); });
+              console.log('[hp] RESULT ' + JSON.stringify({ ...res, answer: undefined }));
+              done(true);
+            } catch (err) {
+              const msg = String((err && err.message) || err);
+              console.log('[hp] PROBE ERROR: ' + msg);
+              // Only the post-auth desync is retryable. Anything touching
+              // credentials must fail loudly and stay failed.
+              done(/CHECKPOINT A FAILED|rekey|could not size/i.test(msg) ? false : true);
+            }
+          });
+          sock.on('error', (e) => { console.log('[hp] socket error: ' + e.message); done(true); });
         });
-        sock.on('error', (e) => console.log('[hp] socket error: ' + e.message));
+        for (let n = 1; n <= MAX_ATTEMPTS; n++) {
+          await hp.warmupTcp(rec.host, rec.port || DEFAULT_PORT);
+          if (await attempt(n)) break;
+          console.log(`[hp] post-auth desync on attempt ${n}; retrying`);
+        }
       } catch (err) { console.log('[hp] SETUP ERROR: ' + (err && err.message)); }
     });
     return; // don't open the normal RFB window in HP mode

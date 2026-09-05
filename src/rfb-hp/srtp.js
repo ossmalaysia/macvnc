@@ -122,6 +122,12 @@ export class SrtpReceiver {
     return Buffer.concat([dec.update(packet.subarray(hdrLen, bodyLen)), dec.final()]);
   }
 
+  /** Per-SSRC receive state for RTCP report blocks (extended highest seq). */
+  reportStats(ssrc) {
+    const st = this._states.get(ssrc >>> 0);
+    return st ? { maxSeq: st.maxSeq, roc: st.roc } : {};
+  }
+
   _updateState(ssrc, roc, seq) {
     let state = this._states.get(ssrc);
     if (!state) { state = { roc: 0, maxSeq: 0, initialized: false }; this._states.set(ssrc, state); }
@@ -197,4 +203,72 @@ export function buildFirLegacy(targetSsrc) {
   b[0] = 0x80; b[1] = 192; b.writeUInt16BE(1, 2);
   b.writeUInt32BE(targetSsrc >>> 0, 4);
   return b;
+}
+
+/**
+ * Receiver Report (RFC 3550 §6.4.2, PT=201). Apple's AVConference peer stops
+ * sending video if the receiver goes silent — it expects an RR roughly every
+ * 0.5s (session.py:3682-3685). Without it the stream dies after ~25-30s.
+ * `sources` is the list of tile SSRCs; `stats` maps ssrc -> {maxSeq, roc} so
+ * the report carries the extended highest sequence number received.
+ */
+export function buildRr(senderSsrc, sources = [], stats = new Map()) {
+  const list = sources.slice(0, 31);
+  if (list.length === 0) {
+    const b = Buffer.alloc(8);
+    b[0] = 0x80; b[1] = 201; b.writeUInt16BE(1, 2);
+    b.writeUInt32BE(senderSsrc >>> 0, 4);
+    return b;
+  }
+  const rc = list.length;
+  const b = Buffer.alloc(8 + rc * 24);
+  b[0] = 0x80 | rc; b[1] = 201;
+  b.writeUInt16BE(1 + rc * 6, 2); // length in 32-bit words minus one
+  b.writeUInt32BE(senderSsrc >>> 0, 4);
+  let o = 8;
+  for (const ssrc of list) {
+    const st = stats.get(ssrc) || {};
+    b.writeUInt32BE(ssrc >>> 0, o);
+    // fraction lost + cumulative lost left at 0: Apple uses the report as a
+    // liveness signal, and we recover loss with FIR rather than NACK.
+    b.writeUInt32BE(0, o + 4);
+    const ext = (((st.roc || 0) & 0xffff) << 16) | ((st.maxSeq || 0) & 0xffff);
+    b.writeUInt32BE(ext >>> 0, o + 8);
+    b.writeUInt32BE(0, o + 12); // interarrival jitter
+    b.writeUInt32BE(0, o + 16); // LSR
+    b.writeUInt32BE(0, o + 20); // DLSR
+    o += 24;
+  }
+  return b;
+}
+
+/** Empty Sender Report (PT=200) so AVConference accepts us as a live sender. */
+export function buildEmptySr(senderSsrc) {
+  const b = Buffer.alloc(28);
+  b[0] = 0x80; b[1] = 200; b.writeUInt16BE(6, 2);
+  b.writeUInt32BE(senderSsrc >>> 0, 4);
+  const now = Date.now() / 1000;
+  const sec = Math.floor(now);
+  b.writeUInt32BE((sec + 2208988800) >>> 0, 8);          // NTP epoch delta
+  b.writeUInt32BE(Math.floor((now - sec) * 4294967296) >>> 0, 12);
+  b.writeUInt32BE(Math.floor(now * 90000) >>> 0, 16);    // RTP timestamp
+  return b;                                              // packet + octet count 0
+}
+
+/** Picture Loss Indication (RFC 4585 §6.3.1). Lighter than FIR. */
+export function buildPli(senderSsrc, mediaSsrc) {
+  const b = Buffer.alloc(12);
+  b[0] = 0x80 | 1; b[1] = 206; b.writeUInt16BE(2, 2);
+  b.writeUInt32BE(senderSsrc >>> 0, 4);
+  b.writeUInt32BE(mediaSsrc >>> 0, 8);
+  return b;
+}
+
+/**
+ * Prefix feedback with an empty RR. Some RTCP peers — screensharingd included —
+ * reject feedback that is not part of a compound packet starting with SR or RR
+ * (rtcp.py:172-175).
+ */
+export function compoundWithRr(senderSsrc, payload) {
+  return Buffer.concat([buildRr(senderSsrc), payload]);
 }
