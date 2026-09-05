@@ -30,7 +30,7 @@ or independent security audit is claimed.
 - Host and username remain visible in the local profile. DPAPI does not protect
   against malicious software already running as the same Windows user.
 - Forget replaces the native profile with an empty record so legacy credentials
-  are not imported again. Older Electron files are left untouched.
+  are not imported again. Historical fixture files are left untouched.
 
 ## Network and decoder boundaries
 
@@ -69,9 +69,5 @@ materials described in [THIRD_PARTY.md](docs/THIRD_PARTY.md). Builds are unsigne
 unless a release explicitly states otherwise. A checksum detects changed bytes
 but does not by itself establish publisher identity or a reproducible build.
 
-## Legacy Electron implementation
-
-`src/` and `test/` retain an Electron reference implementation. Its ordinary RFB
-path does not encrypt screen/input traffic. Its threat model differs from the
-native application. See [historical notes](docs/legacy-security.md); those notes
-are not current native security guarantees.
+The supported application is the native Rust client. The protocol fixture tree
+is used only for offline regression coverage and is not packaged for users.

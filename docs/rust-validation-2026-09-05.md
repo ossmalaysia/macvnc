@@ -1,6 +1,6 @@
 # Native Rust HP validation — 2026-09-05
 
-This is separate from the earlier Electron/browser fixture validation in
+This is separate from the earlier browser fixture validation in
 `validation-2026-09-05.md`. The native package uses egui/OpenGL and FFmpeg 7;
 a browser cannot validate its native window or TCP/UDP transport.
 
@@ -43,7 +43,7 @@ decoded 1,154 complete 1920x1080 pictures and published 755 latest-frame updates
 (25.2 updates/sec including startup). Authentication rejects, decode errors and
 concealed missing-reference errors were all zero. Three startup source handoffs
 and four keyframe requests occurred. This probe measures backend frame delivery,
-not display scanout; it is not an apples-to-apples benchmark against Electron.
+not display scanout; it is not an apples-to-apples benchmark against the previous implementation.
 
 The packaged release was then opened and inspected through native-window tooling.
 The complete image was visibly coherent, including the formerly corrupted lower

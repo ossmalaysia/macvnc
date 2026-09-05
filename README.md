@@ -13,6 +13,14 @@ channel, SRTP and packet assembly are Rust. HEVC decoding uses native FFmpeg 7
 shared libraries; there is no Electron, browser, Node or Python runtime in the
 Rust package.
 
+## Platform support
+
+The supported native package runs on **Windows x64** and controls a Mac running
+macOS Screen Sharing. A native macOS controller build is not available yet, so
+Mac-to-Mac control through MacVNC is currently unsupported. On two Macs, use
+Apple's built-in **Screen Sharing** app (Finder → Go → Connect to Server →
+`vnc://<mac-address>`) or Remote Management instead.
+
 **Status: experimental native build.** Live 1080p validation passes authentication,
 decoding and missing-reference checks; see the [validation report](docs/rust-validation-2026-09-05.md).
 An idle login-screen black-picture issue is still under investigation; reconnecting
@@ -127,11 +135,7 @@ aggregate counters every five seconds; it never includes credentials or pictures
 
 For contributions and safe bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The previous JavaScript/Electron implementation remains in `src/` and `test/`
-for protocol comparison and regression fixtures. Its instructions and measured
-history are in [the archived guide](docs/legacy-electron.md). It is not a
-supported release artifact. `npm test` runs the legacy regression fixtures; it
-does not validate the native Rust application.
+Native validation uses the Rust workspace commands above.
 
 See [AGENTS.md](AGENTS.md), [Rust guidance](rust/AGENTS.md) and
 [SECURITY.md](SECURITY.md). The original MIT license is retained; the native HP crates and

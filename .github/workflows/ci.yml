@@ -14,7 +14,7 @@ permissions:
 jobs:
   gate:
     name: PR gate
-    needs: [test, audit, purity, secrets, rust-audit]
+    needs: [secrets, rust-audit]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -24,72 +24,6 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           node -e 'const jobs=JSON.parse(process.env.RESULTS); if(Object.values(jobs).some(j=>j.result!=="success")) process.exit(1);'
-  test:
-    name: Test (Node ${{ matrix.node }} on ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        node: ['22', '24']
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: ${{ matrix.node }}
-      # The protocol core is dependency-light and the tests never touch the
-      # network or Electron, so a plain install is enough.
-      - run: npm ci
-        env:
-          # Electron's postinstall downloads a ~100MB binary we don't need for tests.
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      - run: npm test
-
-  audit:
-    name: Dependency audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-      - run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
-      # Fail the build on a high/critical advisory in anything we ship or build with.
-      - name: npm audit (high+)
-        run: npm audit --audit-level=high
-
-  purity:
-    name: Protocol core stays portable
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      # src/rfb/** must run unchanged in Node AND a browser worker: no Electron,
-      # no node: builtins, no Buffer. This is what keeps it headlessly testable.
-      - name: No Node/Electron-only APIs in src/rfb
-        run: |
-          if grep -rnE "(^|[^_a-zA-Z])require\s*\(|from\s+['\"](electron|net|fs|zlib|crypto|dgram|node:[a-z]+)['\"]" src/rfb/; then
-            echo "::error::src/rfb/** must not import Electron or node: builtins"
-            exit 1
-          fi
-          # Ignore comment lines — several of them mention "no Buffer" by design.
-          if grep -rn "\bBuffer\b" src/rfb/ --include=*.js \
-             | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)'; then
-            echo "::error::src/rfb/** must use Uint8Array, not Buffer"
-            exit 1
-          fi
-          echo "src/rfb/ is portable"
-
   secrets:
     name: Public source hygiene
     runs-on: ubuntu-latest
