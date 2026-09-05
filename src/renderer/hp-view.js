@@ -22,9 +22,14 @@ let decoder = null, configured = false;
 const ptsToTile = new Map();
 const PTS_MAP_MAX = 512;
 
+// Resize on ANY change to width, tile height, or TILE COUNT. The tile count
+// starts at 1 (only one SSRC has been seen) and climbs to 4 as the other tile
+// streams appear; if only tile dimensions are watched, the canvas stays one
+// band tall, three bands are drawn outside it, and CSS stretches the survivor
+// to fill the window — which looks like a zoomed-in crop of the desktop.
 function sizeCanvas() {
   const w = tileW, h = tileH * tiles;
-  if (w > 0 && (canvas.width !== w || canvas.height !== h)) {
+  if (w > 0 && h > 0 && (canvas.width !== w || canvas.height !== h)) {
     canvas.width = w;
     canvas.height = h;
   }
@@ -68,7 +73,12 @@ function ensureDecoder() {
 
 function onAu(au) {
   if (!au || !au.chunks) return;
-  if (typeof au.tiles === 'number' && au.tiles > 0) tiles = au.tiles;
+  if (typeof au.tiles === 'number' && au.tiles > tiles) {
+    // Tile count only ever grows as SSRCs appear; never shrink the canvas
+    // mid-session or already-painted bands would be discarded.
+    tiles = au.tiles;
+    sizeCanvas();
+  }
   const d = ensureDecoder();
 
   if (!configured) {

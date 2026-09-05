@@ -185,6 +185,17 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
   // sending video after ~25-30s. It expects an RR every ~0.5s, with an empty
   // SR every 10th tick (session.py:90, :3682-3685). Without this the picture
   // simply freezes mid-session.
+  // Periodic refresh FIR. Apple emits only ~2 unprompted IDRs, so a block that
+  // decodes wrong stays wrong for the whole session — visible as a smeared
+  // patch wherever content changed during a reference glitch. The reference
+  // escalates to FIR from a frame-quality gate (quality_gate.py); this is the
+  // cheap equivalent. Each IDR is a full 4:4:4 keyframe, so the interval trades
+  // repair latency against a bandwidth/latency spike.
+  const refreshMs = Number(process.env.VNC_HP_REFRESH_MS) || 5000;
+  const refreshFir = setInterval(() => {
+    if (!settled || !baseSsrc) return;
+    requestIdr(baseSsrc);
+  }, refreshMs);
   let txTick = 0;
   const rtcpKeepalive = setInterval(() => {
     if (!srtcp || !ourVideoSsrc) return;
@@ -274,7 +285,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     try { udpCtrl.send(Buffer.from([0]), 5900, host); } catch {}
     try { udpVideo.send(Buffer.from([0]), 5901, host); } catch {}
   }, 100);
-  const cleanup = () => { clearInterval(punch); clearInterval(reFir); clearInterval(rtcpKeepalive); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
+  const cleanup = () => { clearInterval(punch); clearInterval(reFir); clearInterval(refreshFir); clearInterval(rtcpKeepalive); try { udpCtrl.close(); } catch {} try { udpVideo.close(); } catch {} };
   log(`UDP bound 5900/5901, firewall-punching ${host}`);
 
   // Everything past the UDP bind runs under try/finally: an early throw (the

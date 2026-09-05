@@ -2,8 +2,14 @@
 <title>macvnc — HP (HEVC)</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; background: #000; overflow: hidden; }
-  #screen { display: block; width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+  body { margin: 0; background: #000; overflow: hidden;
+         display: flex; align-items: center; justify-content: center;
+         width: 100vw; height: 100vh; }
+  /* Letterbox the full desktop into the window. Flex centring plus max-* keeps
+     the aspect ratio without relying on object-fit, which Chromium applies
+     inconsistently to <canvas>. */
+  #screen { display: block; max-width: 100vw; max-height: 100vh;
+            width: auto; height: auto; background: #000; }
   #hud {
     position: fixed; top: 8px; left: 8px; font: 12px ui-monospace, monospace;
     color: #7CFC00; background: rgba(0,0,0,.55); padding: 4px 8px; border-radius: 4px;
