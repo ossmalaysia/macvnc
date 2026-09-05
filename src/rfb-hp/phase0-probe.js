@@ -150,6 +150,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
   const udpVideo = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   let videoPkts = 0, videoRtp = 0, videoRtcp = 0, firstFrom = null;
   let srtp = null, srtpOk = 0, srtpFail = 0, aus = 0, keyAus = 0, depkt = null;
+  const ssrcSeen = new Map();
   udpVideo.on('message', (msg, rinfo) => {
     videoPkts++;
     if (!firstFrom) firstFrom = `${rinfo.address}:${rinfo.port}`;
@@ -160,6 +161,7 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     try { dec = srtp.unprotect(msg); } catch { srtpFail++; return; }
     if (!dec) { srtpFail++; return; }
     srtpOk++;
+    ssrcSeen.set(dec.ssrc, (ssrcSeen.get(dec.ssrc) || 0) + 1);
     if (depkt) {
       try {
         const au = depkt.push(dec.ssrc, dec.payload, dec.timestamp ?? 0, dec.seq);
@@ -269,7 +271,8 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     if (msg[0] === 0x00) {
       const rects = walkRects(msg, (enc, x, y, w, h, payload) => {
         seen.push('0x' + (enc >>> 0).toString(16));
-        if (enc === 0x451 && payload && payload.length >= 10) {
+        if (enc === 0x451 && payload && payload.length >= 12) {
+          log(`[phase2] 0x451 payload ${payload.length}B head=${hex(payload, 24)}`);
           layout = { ver: payload.readUInt16BE(0), scaledW: payload.readUInt16BE(2), scaledH: payload.readUInt16BE(4), backingW: payload.readUInt16BE(6), backingH: payload.readUInt16BE(8) };
         }
       });
@@ -325,6 +328,8 @@ export async function runHpProbe(socket, { host, username, password, onAu, runSe
     const streaming = videoRtp > 0;
     log(`[phase4] SRTP: ${srtpOk} decrypted+MAC-verified, ${srtpFail} failed`);
     log(`[phase5] HEVC access units: ${aus} (${keyAus} key/IDR)`);
+    const sl = [...ssrcSeen.entries()].map(([k,v]) => k + ':' + v).join('  ');
+    log(`[diag] distinct video SSRCs = ${ssrcSeen.size}  ->  ${sl}`);
     if (srtpOk > 0) log('[phase4] >>> SUCCESS: SRTP crypto is byte-correct on live packets.');
     else if (streaming) log('[phase4] >>> RTP arrives but SRTP MAC fails — key2 selection or IV/HMAC formula.');
     if (aus > 0) log('[phase5] >>> Depacketizer produced HEVC access units — ready to feed WebCodecs.');
@@ -346,23 +351,60 @@ async function readRecord(r) {
 
 // Walk the rects of a decrypted FramebufferUpdate inner message. Returns false if
 // a rect payload cannot be sized (so the caller stops). cb(enc,x,y,w,h,payload).
+/**
+ * Size one metadata rect's payload so the walk can CONTINUE to the next rect.
+ * Returning -1 means "unsizeable" and the caller must stop (RFB rects carry no
+ * length, so a wrong size desyncs the whole stream - that is the 0x44f<<8 bug).
+ */
+function metaPayloadLen(enc, buf) {
+  try {
+    switch (enc) {
+      case 1103: return 36;                                   // 0x44f rekey
+      case 0x451: {                                           // AppleDisplayLayout
+        if (buf.length < 20) return -1;
+        return 20 + buf.readUInt16BE(18) * 56;                // hdr + count*56
+      }
+      case 0x453: return 22;                                  // fixed
+      case 0x455: {                                           // +8 u16 id_len
+        if (buf.length < 10) return -1;
+        return 10 + buf.readUInt16BE(8);
+      }
+      case 0x456: {                                           // +0 u16 msg_size
+        if (buf.length < 2) return -1;
+        return buf.readUInt16BE(0);
+      }
+      case 0x450: {                                           // cursor: u32 id + u32 len + data
+        if (buf.length < 8) return -1;
+        return 8 + buf.readUInt32BE(4);
+      }
+      case 1010: case 1011: {                                 // u16-length-prefixed
+        if (buf.length < 2) return -1;
+        return 2 + buf.readUInt16BE(0);
+      }
+      default: return -1;
+    }
+  } catch { return -1; }
+}
+
 function walkRects(msg, cb) {
   let p = 2; // u8 type, u8 pad
+  if (msg.length < 4) return false;
   const n = msg.readUInt16BE(p); p += 2;
   for (let i = 0; i < n; i++) {
     if (p + 12 > msg.length) return false;
-    const x = msg.readUInt16BE(p), y = msg.readUInt16BE(p + 2), w = msg.readUInt16BE(p + 4), h = msg.readUInt16BE(p + 6);
-    const enc = msg.readInt32BE(p + 8); p += 12;
-    // Known length-prefixed / fixed metadata payloads we can size.
-    if (enc === 0x451 || enc === 0x453 || enc === 0x455 || enc === 0x456 || enc === 0x450) {
-      // These carry their own internal length; hand the remaining buffer to cb and stop
-      // sizing precisely (one metadata rect per FBU is the common case for bring-up).
-      cb(enc, x, y, w, h, msg.subarray(p));
-      return true;
+    const x = msg.readUInt16BE(p), y = msg.readUInt16BE(p + 2);
+    const w = msg.readUInt16BE(p + 4), h = msg.readUInt16BE(p + 6);
+    const enc = msg.readInt32BE(p + 8);
+    p += 12;
+    if (enc === -224) return true;                            // LastRect ends the update
+    const rest = msg.subarray(p);
+    const len = metaPayloadLen(enc, rest);
+    if (len < 0 || p + len > msg.length) {
+      cb(enc, x, y, w, h, null);
+      return false;                                           // cannot size -> must stop
     }
-    if (enc === 1010 || enc === 1011) { const l = msg.readUInt16BE(p); p += 2 + l; continue; }
-    cb(enc, x, y, w, h, null);
-    return false;
+    cb(enc, x, y, w, h, rest.subarray(0, len));
+    p += len;                                                 // ADVANCE past the payload
   }
   return true;
 }

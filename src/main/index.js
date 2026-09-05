@@ -436,7 +436,7 @@ app.whenReady().then(() => {
         sock.on('connect', async () => {
           try {
             const res = await hp.runHpProbe(sock, {
-              host: rec.host, username: rec.username, password, runSeconds: 60,
+              host: rec.host, username: rec.username, password, runSeconds: 12,
               onAu: (au) => send('hp-au', au),
             }, (m) => { console.log('[hp] ' + m); send('hp-status', m); });
             console.log('[hp] RESULT ' + JSON.stringify({ ...res, answer: undefined }));
