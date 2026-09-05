@@ -586,10 +586,10 @@ impl eframe::App for App {
                                 );
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
-                                    ui.label("Keyboard");
-                                    egui::ComboBox::from_id_salt("keyboard-profile")
+                                        ui.label("Shortcuts");
+                                        egui::ComboBox::from_id_salt("keyboard-profile")
                                         .selected_text(if self.profile.profile == "native" {
-                                            "Native"
+                                            "Ctrl → Control"
                                         } else {
                                             "Ctrl → Command"
                                         })
@@ -602,10 +602,17 @@ impl eframe::App for App {
                                             ui.selectable_value(
                                                 &mut self.profile.profile,
                                                 "native".into(),
-                                                "Native",
+                                                "Ctrl → Control",
                                             );
                                         });
                                 });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Use Ctrl → Control for Control-based Mac shortcuts; Ctrl → Command maps Windows Ctrl to ⌘.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
                                 ui.add_space(14.0);
                                 ui.checkbox(&mut self.remember, "Remember securely");
                                 ui.add_enabled(
