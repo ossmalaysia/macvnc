@@ -1,85 +1,80 @@
-name: Release
-
-# Publish installers when a version tag is pushed, e.g.:
-#   git tag v1.0.0 && git push origin v1.0.0
+name: Native Rust release
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
-
 permissions:
-  contents: write   # needed to create the GitHub Release and upload assets
-
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
-    name: Build ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            script: dist:win
-            artifacts: 'dist/*.exe'
-          - os: ubuntu-latest
-            script: dist:linux
-            artifacts: 'dist/*.AppImage'
-          - os: macos-latest
-            script: dist:mac
-            artifacts: 'dist/*.dmg'
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: '24'
-      - run: npm ci
-      - run: npm test
-      # Builds are UNSIGNED: no code-signing certificate is configured. Users will
-      # see SmartScreen (Windows) / Gatekeeper (macOS) warnings. Documented in README.
-      - run: npm run ${{ matrix.script }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - uses: actions/upload-artifact@v4
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate release tag and reviewed source
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Expected vMAJOR.MINOR.PATCH tag' }
+          $manifest = Get-Content rust/crates/macvnc-app/Cargo.toml -Raw
+          $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"\s*$').Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag does not match app version' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release commit must belong to main' }
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: ./scripts/build-rust.ps1 -Package
+        shell: pwsh
+      - name: Validate native decoder and archive portable package
+        shell: pwsh
+        run: |
+          $env:MACVNC_FFMPEG_DIR = Join-Path $pwd 'dist/macvnc-rust'
+          cargo test -p hp-media --test native_decode --locked -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Native decoder test failed' }
+          Compress-Archive -Path dist/macvnc-rust -DestinationPath dist/macvnc-rust-windows-x64.zip -Force
+          (Get-FileHash dist/macvnc-rust-windows-x64.zip -Algorithm SHA256).Hash.ToLower() + '  macvnc-rust-windows-x64.zip' | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: macvnc-${{ matrix.os }}
-          path: ${{ matrix.artifacts }}
+          name: release-package
+          path: |
+            dist/macvnc-rust-windows-x64.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
-
-  release:
-    name: Publish GitHub Release
+          retention-days: 14
+  publish:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-release
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # No checkout, repository scripts, package execution or PR artifacts here.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: artifacts
-      - name: Create release
-        uses: softprops/action-gh-release@v2
+          name: release-package
+          path: release
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: artifacts/**/*
+          files: |
+            release/macvnc-rust-windows-x64.zip
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          draft: true
           body: |
-            ## Install
-
-            Download the file for your platform below.
-
-            | Platform | File |
-            |---|---|
-            | Windows (installer) | `macvnc Setup <version>.exe` |
-            | Windows (portable, no install) | `macvnc <version>.exe` |
-            | Linux | `macvnc-<version>.AppImage` |
-            | macOS | `macvnc-<version>.dmg` |
-
-            > **These builds are unsigned.** Windows SmartScreen will show
-            > "Windows protected your PC" — click **More info -> Run anyway**.
-            > macOS Gatekeeper will block it — right-click the app -> **Open**.
-            > Only do this because you trust this source; verify the checksums if unsure.
-
-            Then enter your Mac's IP, your macOS account name and password.
-            Screen Sharing must be enabled on the Mac
-            (System Settings -> General -> Sharing -> Screen Sharing).
-
-            See the [README](https://github.com/jazztong/macvnc#readme) for setup and
-            [SECURITY.md](https://github.com/jazztong/macvnc/blob/main/SECURITY.md)
-            for the threat model and known limitations.
+            Experimental native Rust HP client for Windows x64.
+            Developed by AnchorSprint — https://anchorsprint.com
+            Extract the entire archive and run macvnc-app.exe beside its DLLs.
+            Unsigned build; native FFmpeg software HEVC decoding.
+            Review the included license/source materials before making this draft public.
+            Commercial/customization enquiries: oss@anchorsprint.com.

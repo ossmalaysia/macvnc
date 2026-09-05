@@ -1,0 +1,11 @@
+# Security-sensitive changes require repository-owner review.
+/.github/ @jazztong
+/scripts/ @jazztong
+/Cargo.toml @jazztong
+/Cargo.lock @jazztong
+/rust-toolchain.toml @jazztong
+/SECURITY.md @jazztong
+/LICENSE @jazztong
+/LICENSING.md @jazztong
+/NOTICE.md @jazztong
+/docs/THIRD_PARTY.md @jazztong

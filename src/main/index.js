@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { randomFillSync } from 'node:crypto';
 import { RfbSession } from '../rfb/rfb-session.js';
+import { loadCredentials, saveCredentials, clearCredentials } from './credentials.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -177,9 +178,11 @@ function forwardEvent(ev) {
       sawAuthFailure = true;
       authFailureReason = ev.reason || 'authentication or authorization failure';
       status('auth-failed', authFailureReason);
+      teardown();
       break;
     case 'error':
       status('error', ev.message || 'protocol error');
+      teardown();
       break;
     default:
       break;
@@ -248,11 +251,12 @@ function onRendererMessage(msg) {
 ipcMain.handle('vnc:connect', (_event, opts) => {
   const o = opts || {};
   const host = o.host;
-  const port = Number(o.port) || DEFAULT_PORT;
+  const port = o.port == null || o.port === '' ? DEFAULT_PORT : Number(o.port);
   const username = o.username || '';
   const password = o.password || '';
 
-  if (!host) return Promise.resolve({ ok: false, error: 'no host given' });
+  if (typeof host !== 'string' || !host.trim()) return { ok: false, error: 'no host given' };
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: 'invalid port' };
 
   teardown();
   sawAuthFailure = false;
@@ -320,60 +324,11 @@ ipcMain.handle('vnc:connect', (_event, opts) => {
 // (safeStorage -> Windows DPAPI, tied to this OS account). The rest is plain so
 // the form can prefill even when encryption is briefly unavailable.
 
-function credsPath() {
-  return path.join(app.getPath('userData'), 'vnc-creds.json');
-}
-
-ipcMain.handle('creds:load', () => {
-  let raw;
-  try {
-    raw = fs.readFileSync(credsPath(), 'utf8');
-  } catch {
-    // Fall back to the pre-rename location so host/username survive the rename.
-    try {
-      raw = fs.readFileSync(path.join(app.getPath('userData'), '..', 'vnc-client', 'vnc-creds.json'), 'utf8');
-    } catch {
-      return null; // no saved creds anywhere
-    }
-  }
-  let rec;
-  try { rec = JSON.parse(raw); } catch { return null; }
-
-  // Decrypt the password on its own: a failure (e.g. keychain scope changed after
-  // a rename) must not drop the host/username, and must not auto-connect blank.
-  let password = '';
-  let pwOk = true;
-  if (rec.enc) {
-    try {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error('encryption unavailable');
-      password = safeStorage.decryptString(Buffer.from(rec.enc, 'base64'));
-    } catch {
-      pwOk = false;
-    }
-  }
-  return {
-    host: rec.host || '',
-    port: rec.port || DEFAULT_PORT,
-    username: rec.username || '',
-    password,
-    profile: rec.profile || '',
-    autoConnect: !!rec.autoConnect && pwOk, // never auto-connect without a real password
-  };
-});
+ipcMain.handle('creds:load', () => loadCredentials(app.getPath('userData'), safeStorage));
 
 ipcMain.handle('creds:save', (_event, c) => {
   try {
-    const rec = {
-      host: c.host || '',
-      port: Number(c.port) || DEFAULT_PORT,
-      username: c.username || '',
-      profile: c.profile || '',
-      autoConnect: !!c.autoConnect,
-    };
-    if (c.password && safeStorage.isEncryptionAvailable()) {
-      rec.enc = safeStorage.encryptString(String(c.password)).toString('base64');
-    }
-    fs.writeFileSync(credsPath(), JSON.stringify(rec), { mode: 0o600 });
+    saveCredentials(app.getPath('userData'), safeStorage, c);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -382,11 +337,11 @@ ipcMain.handle('creds:save', (_event, c) => {
 
 ipcMain.handle('creds:clear', () => {
   try {
-    fs.rmSync(credsPath(), { force: true });
-  } catch {
-    /* nothing to clear */
+    clearCredentials(app.getPath('userData'));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
-  return { ok: true };
 });
 
 ipcMain.handle('vnc:toggleFullscreen', () => {

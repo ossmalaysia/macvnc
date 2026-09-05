@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+  "rust/crates/hp-protocol",
+  "rust/crates/hp-media",
+  "rust/crates/macvnc-app",
+]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

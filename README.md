@@ -1,217 +1,132 @@
-# macvnc — a free VNC client for macOS Screen Sharing
+# MacVNC v0.1.5 — native Rust HP client
 
-A from-scratch VNC client that connects **from Windows (or Linux) to a Mac** running the built-in **Screen Sharing**, with no third-party account, no subscription, and no agent to install on the Mac. See your Mac's screen and control it with your mouse, keyboard, and clipboard.
+Developed by [AnchorSprint](https://anchorsprint.com).
 
-Built because ordinary VNC clients **can't connect to a stock Mac** — and it turns out the reason is interesting.
+Commercial and enterprise customization enquiries:
+[oss@anchorsprint.com](mailto:oss@anchorsprint.com).
+See [licensing](LICENSING.md) for current terms and the proposed source-available
+model; the proposed usage limits do not override existing AGPL/MIT rights.
 
----
+A native Windows desktop client for the Mac's built-in High Performance Screen
+Sharing. The application, UI, input handling, authentication, encrypted control
+channel, SRTP and packet assembly are Rust. HEVC decoding uses native FFmpeg 7
+shared libraries; there is no Electron, browser, Node or Python runtime in the
+Rust package.
 
-## Why this exists
+**Status: experimental native build.** Live 1080p validation passes authentication,
+decoding and missing-reference checks; see the [validation report](docs/rust-validation-2026-09-05.md).
+An idle login-screen black-picture issue is still under investigation; reconnecting
+currently restores the picture in the reported case.
+A language rewrite alone does not prove better FPS. Hardware HEVC acceleration is not currently enabled; the native
+software decoder uses slice threading for Apple's HEVC 4:4:4 stream.
 
-Turn on Screen Sharing on a Mac and point TightVNC / UltraVNC / RealVNC at it, and most of them fail to authenticate. That's not a bug in those clients — a stock Mac offers **only Apple's proprietary security types** over RFB. Standard VNC password auth (the DES challenge every classic client speaks) simply isn't on the menu unless you dig into a legacy checkbox.
+## Build and run (Windows x64)
 
-So this client implements **Apple's authentication directly**: a Diffie-Hellman key exchange (RFC 2409 Oakley Group 2), an MD5-derived AES-128 key, and an encrypted credential blob — the same handshake Apple's own Screen Sharing.app uses. You log in with your **real macOS account**, no separate VNC password required.
+Install stable Rust using rustup and Visual Studio C++ build tools with the
+Windows SDK, then:
 
-Everything — the crypto, the RFB protocol, the image decoders — is written from scratch in plain JavaScript. The only runtime dependency is [pako](https://github.com/nodeca/pako) for DEFLATE.
-
-## Inspiration
-
-Remote desktop to a Mac usually means reaching for a paid tool — TeamViewer, AnyDesk, a subscription. But the Mac already has everything you need: Screen Sharing is built in and free. The only thing standing between you and it is Apple's undocumented authentication, which is exactly why the free VNC clients bounce off it.
-
-So this project set out to prove a point: **with an AI coding agent, one person can reverse-engineer a proprietary protocol and build a real, working client from nothing — and give it away.** The Apple type-30 handshake here wasn't copied from a library (there isn't one for JavaScript); it was reconstructed byte by byte by probing a live Mac, verifying each field against the RFC and open-source implementations, and adversarially checking the findings before a line of code was written. Then the crypto, the RFB state machine, and the decoders were built and tested the same way.
-
-The result is free remote access to your own Mac, owned entirely by you — no account, no cloud relay, no subscription, no telemetry. If it's useful to you, that's the whole point. Fork it, learn from it, make it better.
-
-## Features
-
-- 🔓 **Apple authentication** (RFB security type 30) — connects to a stock Mac with your macOS account
-- 🖥️ **Live screen** — zlib / CopyRect / Raw decoding, RGB565 for low latency on a LAN
-- 🖱️ **Full control** — mouse, scroll, keyboard, and two-way clipboard text
-- ⌨️ **Correct key mapping** — Windows→macOS modifiers (Ctrl acts as ⌘ by default, or a Native profile)
-- 💾 **Saved connections** — remember host/user, password encrypted at rest via the OS keychain, optional auto-connect
-- 🖼️ **Fullscreen** — F11 (or Ctrl+Shift+F)
-- 🧪 **88 unit tests**, protocol core runs headlessly with zero dependencies
-
-## Requirements
-
-- A **Windows, Linux or macOS** machine to run the client on
-- A **Mac** with Screen Sharing enabled (see below)
-- Both machines on the same network
-- *Only if running from source:* **Node.js 20+** (developed on Node 24)
-
-## Install
-
-### Option 1 — download an installer (no tools needed)
-
-Grab the file for your platform from the
-**[latest release](https://github.com/jazztong/macvnc/releases/latest)**:
-
-| Platform | File | Notes |
-|---|---|---|
-| **Windows** | `macvnc Setup <version>.exe` | Normal installer |
-| **Windows** | `macvnc <version>.exe` | Portable — just run it, nothing installed |
-| **Linux** | `macvnc-<version>.AppImage` | `chmod +x` then run |
-| **macOS** | `macvnc-<version>.dmg` | Open and drag to Applications |
-
-> ⚠️ **These builds are unsigned** — there's no paid code-signing certificate behind
-> this project. Your OS will warn you:
-> - **Windows:** "Windows protected your PC" → **More info** → **Run anyway**
-> - **macOS:** right-click the app → **Open** (instead of double-clicking)
->
-> That warning is expected for unsigned open-source software. Only bypass it because
-> you trust this source — or build from source yourself (Option 2), which needs no
-> such trust.
-
-### Option 2 — run from source
-
-Needs [Node.js](https://nodejs.org) 20+ and git.
-
-```bash
-git clone https://github.com/jazztong/macvnc.git
-cd macvnc
-npm install
-npm start
+```powershell
+cargo test --workspace
+powershell -File scripts/build-rust.ps1 -Package
+.\dist\macvnc-rust\macvnc-app.exe
 ```
 
-To build your own installer: `npm run dist:win` (or `dist:linux` / `dist:mac`).
-Output lands in `dist/`.
+The packaging script downloads a pinned, checksum-verified FFmpeg 7 LGPL shared
+build. Keep its DLLs beside the executable. `dist/macvnc-rust` is the portable
+package; it includes codec license/source notices. No Node installation is needed.
+If Node is installed, `npm start` launches this Rust package and `npm run
+dist:win` builds it. The `:electron` scripts retain the old Windows build.
 
-## Enable Screen Sharing on the Mac
-
-1. **System Settings → General → Sharing → Screen Sharing → On**
-2. Click the ⓘ next to Screen Sharing and make sure **your user account** is allowed.
-
-That's all — you do **not** need "Remote Management," and you do **not** need to enable the legacy "VNC viewers may control screen with password" option.
+For development, set `MACVNC_FFMPEG_DIR` to the directory containing
+`avcodec-61.dll`, `avutil-59.dll`, `swresample-5.dll`, and `swscale-8.dll` before
+`cargo run -p macvnc-app`.
 
 ## Connect
 
-1. Enter the Mac's **IP address** (System Settings → Wi-Fi → Details shows it) and port **5900**.
-2. Enter your **macOS account name and password** (the short name or full name both work).
-3. Tick **Remember** to save the connection, **Auto-connect** to reconnect on launch.
-4. Click **Connect**.
+The toolbar shows presented FPS and network round-trip latency (`RTT`, in ms).
+On Windows, RTT comes from the OS estimate for the existing TCP connection,
+read once per second without extra probes; it may stay unchanged while idle.
+It does not measure video
+decode, display or input-to-screen delay. `RTT —` means unavailable.
 
-Your credentials are used only for the Apple handshake to your Mac. The password is never sent anywhere else, never written in plain text, and never logged.
+Enable Screen Sharing on an Apple-Silicon Mac running macOS Sonoma 14 or later.
+Use the Mac address, port 5900 and an allowed macOS account. HP uses TCP 5900 and
+UDP media; use a trusted, low-latency network. It can create a virtual display and
+change the Mac's display/session behavior.
 
-## How it works
+The Rust app imports the existing macvnc saved profile locally where Windows
+DPAPI permits it. New profiles use DPAPI and never serialize the plaintext
+password. The encrypted secret binds the destination and account; editing those
+fields invalidates reuse. Older saved passwords remain available but require
+one explicit Connect after checking the Mac address, then saving upgrades them.
+A missing/decryption-failed password disables auto-connect. Rejected
+logins are never retried automatically. The Rust Forget action prevents importing
+legacy credentials again without deleting the older app's files.
 
-```
-   Windows / Linux                                        Mac
-┌─────────────────────────────────────────────┐      ┌──────────────────┐
-│ Electron main process                        │      │  Screen Sharing  │
-│   TCP socket ── RFB 3.889 protocol ──────────┼──────┤  (screensharingd)│
-│   Apple DH + AES-128 auth                    │ 5900 │                  │
-│        │ compressed rectangles (MessagePort) │      └──────────────────┘
-│        ▼                                     │
-│ Renderer worker: zlib / CopyRect / Raw decode│
-│        │ finished frames (ImageBitmap)        │
-│        ▼                                     │
-│ Main thread: paints the <canvas>             │
-└─────────────────────────────────────────────┘
-```
+Click the remote picture to capture keyboard and pointer. F11 toggles fullscreen.
+Drag the Windows title bar, app name, or empty header area to move the client.
+Double-click the app header to maximize or restore the window.
+The keyboard supports Ctrl-as-Command and Native profiles. Left/right modifiers
+are combined by the current GUI input API, so the legacy right-Ctrl passthrough
+is not yet equivalent. Clipboard transmission is supported; audio, file transfer
+and hardware video decode are not implemented.
 
-The interesting parts:
+## Roadmap
 
-- **`src/rfb/`** is a pure protocol core — no Electron, no Node networking, no `Buffer`. It runs identically in Node (for tests) and in a browser worker. A CI-style test greps the tree to keep it that way.
-- **Decode happens in a worker**, and only *compressed* rectangles cross between processes — so bandwidth over the internal boundary equals bandwidth over the network, not the size of a decoded frame.
-- **RGB565 pixels** (16-bit) are requested instead of 32-bit. On a LAN the Mac encodes and ships each frame in roughly half the time — the same trick Apple's own client uses at its "High" quality tier, reached here through the standard `SetPixelFormat` path.
+- [ ] Replace unmaintained transitive `paste` and `ttf-parser` dependencies through
+  compatible upstream upgrades; see the [security review](docs/security-review-2026-09-05.md).
 
-For the full byte-level details — including the Apple type-30 auth handshake and a ranked list of the traps a from-scratch RFB client falls into — see [`docs/research/rfb-3889-protocol-brief.md`](docs/research/rfb-3889-protocol-brief.md).
+- [ ] **Remote audio playback:** play the Mac's system audio through the Windows
+  client, including YouTube on the Mac mini. Currently the client sends an audio
+  heartbeat to maintain the HP session but does not decode or play received audio.
+  Add authenticated audio reception, decoding, bounded playback buffering,
+  audio/video synchronization, and mute/volume controls. Validate audible YouTube
+  playback, synchronization, and clean audio shutdown/restart on disconnect and
+  reconnect using an authorized live session.
 
-## Design decisions and optimizations
+## Architecture
 
-Each of these was chosen deliberately and, where it affects latency, measured against a live Mac:
-
-| Decision | Why |
+| Crate | Responsibility |
 |---|---|
-| **Portable protocol core** (`src/rfb/` uses no Node/Electron APIs) | Runs identically in Node (fast, headless unit tests) and in the browser worker. A test greps the tree to enforce it. |
-| **Decode in a worker, ship compressed rectangles** | Only compressed bytes cross the process boundary, so internal bandwidth = network bandwidth, not the size of a decoded frame (~8 MB at 1440p). |
-| **Frames returned as `ImageBitmap`, painted on the main thread** | A transferred `OffscreenCanvas` renders black from a worker on some Electron/GPU combos; handing back an `ImageBitmap` composites reliably and is a zero-copy transfer. |
-| **zlib encoding preferred over ZRLE** | On a LAN the Mac encodes zlib far faster. Measured server response per frame dropped from **137–620 ms (ZRLE) to 9–76 ms (zlib)**. Bandwidth isn't the constraint on a LAN; the Mac's encode time is. |
-| **16-bit RGB565 pixels instead of 32-bit** | Halves the bytes the Mac encodes and ships per frame — the same win Apple's own client gets from its `0x3ea` "High" encoding, reached here through the standard `SetPixelFormat` path. |
-| **CopyRect kept high-priority** | Lets the Mac say "move this region" instead of re-encoding it — cheap window drags. |
-| **One-outstanding-request pump, no render throttling** | Exactly one frame request in flight (never a timer); `backgroundThrottling: false` keeps decoding at full rate when the window isn't foreground. |
+| `hp-protocol` | Apple type-30 authentication, chained encrypted control records, HP offer/answer and input messages |
+| `hp-media` | SRTP authentication/replay checks, RTP/FU assembly, shared HEVC decoder and negotiated-size compositing |
+| `macvnc-app` | Native egui UI, OS credential storage, session lifecycle and bounded latest-frame delivery |
 
-The net effect: on a LAN this is tuned about as far as **standard** Screen Sharing allows, and it's very usable for real work.
+The HP offer requests one complete HEVC picture per frame. Multi-tile offers
+produced visible corruption in live testing and are not the default. The media
+layer retains band-compositing support and crops to negotiated display dimensions.
+The UI displays a rolling count of frame submissions, excluding idle redraws;
+this is not a measurement of the monitor's actual scanout or input latency.
 
-## Limitations, and a better approach
+## Validation
 
-Be clear about the ceiling. Standard VNC is **demand-driven**: the client asks, the Mac sends one frame, repeat — one frame per network round trip. And the standard-RFB tricks that make clients like [TurboVNC](https://github.com/TurboVNC/turbovnc) fast (Tight + JPEG, adaptive quality) **don't help against a Mac** — Apple's `screensharingd` only sends Raw / CopyRect / zlib / ZRLE, never Tight. So a full-screen video or a fast drag of a large window will show the protocol's limits. That's structural, not a bug.
-
-**The real path to commercial-tool smoothness is a different protocol.** Apple's own *High Performance* Screen Sharing doesn't send rectangles at all — it streams **HEVC (H.265) 4:4:4 video over UDP/SRTP**, hardware-decoded, with no per-frame round trip. That's why Apple's Screen Sharing.app and tools like TeamViewer feel smoother.
-
-### High Performance (HEVC) mode — experimental, incomplete
-
-An implementation lives in `src/rfb-hp/`. It is **developer-only**, gated behind the
-`VNC_HP_PROBE` environment variable, and **does not render a correct picture yet**.
-Be clear about what is and isn't proven, measured against a live Apple-Silicon Mac:
-
-| Stage | Status |
-|---|---|
-| Reaching HP mode over the existing type-30 auth (no SRP needed) | ✅ proven |
-| AES-128-CBC encrypted control channel (both directions) | ✅ proven |
-| Virtual display + metadata (`0x451`/`0x453`/`0x455`/`0x456`) | ✅ decrypted |
-| `0x1c` media negotiation — the Mac starts streaming | ✅ proven |
-| SRTP decrypt | ✅ **7791/7791 packets, 0 HMAC failures** |
-| HEVC decode via WebCodecs | ✅ real pixels decode |
-| **Tile grouping + compositing** | ❌ **broken — the image is wrong** |
-
-The failure is specific and understood: the depacketizer assumes four *equal
-horizontal bands* grouped by matching RTP timestamp. Live traffic contradicts that —
-the four tile SSRCs carry wildly uneven packet counts (e.g. `228 / 311 / 969 / 6283`),
-only ~57 access units are assembled from ~7800 packets, and the composited output
-repeats one strip four times instead of showing four distinct regions. **The tile
-model is wrong**; fixing it means re-deriving how SSRCs map to screen regions rather
-than inferring it.
-
-So: the protocol, crypto and transport are demonstrably correct; the *rendering* is
-not. Don't use HP mode expecting a working remote desktop. Contributions welcome —
-see [`docs/hp-mode/`](docs/hp-mode/) for byte-level blueprints of every component.
-
-### Other known limitations
-
-- **RFB traffic is unencrypted** on the wire (see [SECURITY.md](SECURITY.md)). LAN or tunnel only.
-- **No sandbox** on the renderer (`sandbox: false`) — a deliberate, documented trade-off.
-- Standard-VNC mode is **view + control only**: no file transfer, no audio, no multi-monitor selection, no session recording.
-- `Ctrl+Alt+Del` and `Win+L` cannot be forwarded — Windows reserves them.
-- Tested against Apple Screen Sharing only. Other VNC servers (TightVNC, x11vnc, …) are **not** supported: the client requires Apple security type 30 and does not implement standard VNC password auth.
-- Tested on Windows against one Apple-Silicon Mac (macOS Sonoma+). Linux and older/Intel Macs are unverified.
-
-## Related projects and prior art
-
-- **[iShareScreen](https://github.com/renegadelink/iShareScreen)** — cross-platform Python client for Apple's *High Performance* mode (HEVC over UDP/SRTP). The reference for the low-latency path described above.
-- **[RoyalVNC](https://github.com/royalapplications/royalvnc)** — a modern, high-performance RFB implementation in Swift.
-- **[vvncc](https://github.com/Eden-Sun/vvncc)** — iPad/iPhone VNC client for macOS Screen Sharing (Swift RFB core, Metal dirty-rect rendering).
-- **[TigerVNC](https://github.com/TigerVNC/tigervnc)** / **[TurboVNC](https://github.com/TurboVNC/turbovnc)** — high-performance general-purpose VNC (Tight + JPEG); great references, though their speed tricks target non-Apple servers.
-- **[noVNC](https://github.com/novnc/noVNC)** — the canonical JavaScript RFB client; invaluable for decoder and keysym reference.
-
-## Development
-
-```bash
-npm test      # 88 unit tests, node:test, no network or Electron needed
-npm start     # launch the app
+```powershell
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test -p hp-media --test native_decode -- --ignored
+cargo run -p macvnc-app -- --smoke-ui
 ```
 
-The protocol core (`src/rfb/`) is tested against synthetic wire fixtures built from the verified byte layouts, including a "feed every fixture one byte at a time" test that catches TCP-segmentation bugs. See [`CLAUDE.md`](CLAUDE.md) for the architecture and the rules that keep the core portable.
+The native decoder test requires the FFmpeg DLL directory above and uses an
+included synthetic HEVC image. Live validation uses only a configured, authorized
+Mac; do not store desktop captures or credentials in the repository.
 
-## Security
+For an authorized saved profile, `macvnc-app.exe --live-smoke 120
+--simulate-video-loss --report <path>` checks recovery after deliberately omitting
+one authenticated video fragment. `MACVNC_DIAGNOSTICS_PATH` optionally writes
+aggregate counters every five seconds; it never includes credentials or pictures.
 
-Full policy, threat model and scan results: **[SECURITY.md](SECURITY.md)**. In short:
+## Legacy reference
 
-- **Your credentials go to your Mac and nowhere else.** No telemetry, no analytics, no cloud, no outbound requests. The password is encrypted at rest via Electron `safeStorage` (DPAPI/Keychain/libsecret) and is never logged.
-- **RFB traffic is unencrypted on the wire** — only the auth handshake is protected. Use a trusted LAN or an SSH/VPN tunnel; never expose port 5900 to the internet.
-- Every failed login is a **real** failed login on that Mac, so the client never auto-retries a rejected password.
-- Hardened renderers: `contextIsolation` on, `nodeIntegration` off, strict CSP, no inline scripts, no remote code. **`sandbox: false` is a known, documented gap.**
-- All wire-supplied lengths are bounds-capped before allocation; decoders clip to framebuffer bounds; SRTP rejects packets failing HMAC.
-- **HP mode is reverse-engineered and unaudited.** Developer-only, off by default.
+For contributions and safe bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Latest scan (2026-09-05): `npm audit` **0 vulnerabilities** (runtime + dev), one runtime dependency (`pako`), no secrets in tracked files. Electron was upgraded 38.8.6 → 44.2.0 to clear a HIGH advisory.
+The previous JavaScript/Electron implementation remains in `src/` and `test/`
+for protocol comparison and regression fixtures. Its instructions and measured
+history are in [the legacy guide](docs/legacy-electron.md). `npm run start:electron` launches the legacy app. `npm test` runs those
+legacy tests; they do not validate the new Rust application.
 
-Report vulnerabilities privately via [GitHub Security Advisories](https://github.com/jazztong/macvnc/security/advisories/new).
-
-## License
-
-[MIT](LICENSE) — free to use, modify, and share.
-
-## Credits
-
-Built from scratch as an exploration of the RFB protocol and Apple's Screen Sharing authentication. Not affiliated with or endorsed by Apple. "VNC" is a trademark of its respective owner; this project is an independent, clean-room RFB client.
+See [AGENTS.md](AGENTS.md), [Rust guidance](rust/AGENTS.md) and
+[SECURITY.md](SECURITY.md). The original MIT license is retained; the native HP crates and
+the combined native executable are supplied under AGPL-3.0-or-later. FFmpeg and
+other dependencies retain their own licenses. See [licenses and provenance](docs/THIRD_PARTY.md).

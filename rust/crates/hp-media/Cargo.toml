@@ -1,0 +1,15 @@
+[package]
+name = "hp-media"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+aes = { version = "0.8", features = ["zeroize"] }
+ctr = "0.9"
+hmac = "0.12"
+sha1 = "0.10"
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
+libloading = "0.8"

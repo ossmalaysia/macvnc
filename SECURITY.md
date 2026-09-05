@@ -1,142 +1,77 @@
-# Security Policy
+# Security policy
 
-## Reporting a vulnerability
+MacVNC is an experimental native Rust Windows client for Apple's High Performance
+Screen Sharing. Developed by [AnchorSprint](https://anchorsprint.com). Security
+fixes are accepted for the current development branch; older experimental builds
+do not have a separate maintenance commitment.
 
-Please report security issues privately via
-[GitHub Security Advisories](https://github.com/jazztong/macvnc/security/advisories/new)
-rather than a public issue. Include reproduction steps and the affected version or
-commit. Expect an acknowledgement within a few days; this is a personal-time project,
-so please allow reasonable time before public disclosure.
+## Report a vulnerability privately
 
-## Supported versions
+Use [GitHub private vulnerability reporting](https://github.com/jazztong/macvnc/security/advisories/new)
+when available. Do not put passwords, keys, saved profiles, private hostnames,
+desktop captures or exploitable vulnerability details in a public issue. If
+private reporting is unavailable, open a public issue requesting a private
+contact channel without disclosing the vulnerability. No response-time guarantee
+or independent security audit is claimed.
 
-Only the latest commit on `main` is supported. There are no release branches yet.
+## Credentials and local storage
 
-## What this software does with your data
+- Authentication is attempted only against the configured Mac. Rejected logins
+  are never automatically retried. The default host is blank.
+- Windows DPAPI encrypts remembered passwords for the current OS account. New
+  saved secrets bind the host, port and username inside the protected payload;
+  changing those visible fields invalidates password reuse and auto-connect.
+- Older profiles retain the remembered password but require an explicit Connect
+  after checking the destination. Saving upgrades them to the bound format.
+- Profile writes replace the previous file atomically. Profile and legacy
+  encryption-state reads have size limits. Password buffers are zeroized where
+  owned; this does not guarantee removal of all copies from process memory,
+  operating-system paging or crash dumps.
+- Host and username remain visible in the local profile. DPAPI does not protect
+  against malicious software already running as the same Windows user.
+- Forget replaces the native profile with an empty record so legacy credentials
+  are not imported again. Older Electron files are left untouched.
 
-Stated plainly, because this tool handles a macOS account password.
+## Network and decoder boundaries
 
-- **Your macOS credentials are used only to authenticate to the Mac you specify.**
-  They are sent to that host and nowhere else. There is no telemetry, no analytics,
-  no crash reporting, no cloud service, and no network destination other than the
-  host and port you enter.
-- **Passwords are encrypted at rest** with Electron's
-  [`safeStorage`](https://www.electronjs.org/docs/latest/api/safe-storage) (Windows
-  DPAPI / macOS Keychain / libsecret), scoped to your OS user account. The file in
-  the app's `userData` directory stores only a base64 ciphertext for the password;
-  host and username are stored in clear text so the form can prefill.
-- **Credentials are never written to logs.** The DH shared secret, the derived MD5
-  key, the AES record-layer keys, the SRTP master keys and the credential blob are
-  all excluded from every logging path, including debug output.
-- **"Forget" deletes the stored credential file.**
+- HP media packets are authenticated with SRTP and checked for replay before
+  acceptance. Encrypted control traffic uses Apple's legacy AES-CBC protocol.
+  Apple type-30 authentication does not provide modern server identity
+  verification. Encryption is not a substitute for trusting the destination.
+- Use a trusted network or a correctly configured private tunnel. Do not expose
+  Screen Sharing directly to the public internet. HP needs its UDP media path
+  as well as TCP; a TCP-only tunnel does not cover the full native session.
+- Network lengths, packet queues and decoded image sizes are bounded. Malformed
+  records fail closed. FFmpeg is C code accessed through an unsafe Rust ABI
+  adapter; a memory-safe UI does not make the decoder memory-safe.
+- FFmpeg is loaded from the application directory or the explicitly configured
+  developer runtime directory. Keep executable and DLL directories trusted and
+  retain replaceable DLLs and their license/source notices.
+- The reverse-engineered protocol can change with macOS updates. Authentication,
+  playback, input and recovery need separate live validation; passing offline
+  tests does not establish interoperability or security on every Mac.
 
-## Threat model and known risks
+## Diagnostics and dependencies
 
-### RFB traffic is not encrypted
-The standard VNC/RFB path transports framebuffer and input data **in the clear**.
-Only the authentication handshake is cryptographically protected. Anyone able to
-observe traffic between you and the Mac can reconstruct the screen and your
-keystrokes.
+There is no automatic upload of diagnostics. Opt-in `MACVNC_DIAGNOSTICS_PATH`
+writes local aggregate timing and decoder counters; do not attach saved profiles,
+raw traffic or private screen contents to issues. Review logs before sharing.
+The developer website opens only when its link is clicked.
 
-**Use this on a trusted local network, or tunnel it over SSH or a VPN.** Do not
-expose port 5900 to the internet.
+Rust and Node dependency versions are recorded in lockfiles. Use `cargo audit`
+and `npm audit` for current advisory results; a clean scan only covers known
+advisories in the scanned dependency set. FFmpeg and its bundled native libraries
+require separate upstream review. There is no claim that all dependencies have
+been independently audited.
 
-### Authentication is real, and failures are real
-Apple security type 30 authenticates against a genuine macOS account through
-OpenDirectory. Every failed attempt is a real failed login on that Mac and can
-contribute to account lockout and MDM alerting. The client therefore **never
-auto-retries a rejected password**.
+Published binaries must include matching licenses and corresponding source
+materials described in [THIRD_PARTY.md](docs/THIRD_PARTY.md). Builds are unsigned
+unless a release explicitly states otherwise. A checksum detects changed bytes
+but does not by itself establish publisher identity or a reproducible build.
 
-### The High Performance (HEVC) path is reverse-engineered and experimental
-`src/rfb-hp/` implements Apple's undocumented high-performance protocol, ported
-from an independent reverse-engineering reference. It is **not** an Apple-sanctioned
-or specified interface. Consequences:
+## Legacy Electron implementation
 
-- It can break without warning on any macOS update.
-- Its crypto (AES-128-CBC record layer, SRTP AES-256-CTR + HMAC-SHA1) is implemented
-  from a reverse-engineered description. The SRTP layer **verifies** the server's
-  HMAC on every packet and rejects mismatches, but this code has **not** been
-  independently audited.
-- The HP path is gated behind the `VNC_HP_PROBE` environment variable and is **not**
-  enabled in normal use. It is developer-only. See "Limitations" in the README.
-- It sends experimental control messages to the Mac. Only run it against a machine
-  you own or administer.
-
-### Electron hardening
-- `contextIsolation: true`, `nodeIntegration: false` on every window.
-- A strict `Content-Security-Policy` (`default-src 'none'; script-src 'self'; …`)
-  is set on both renderer pages; no inline scripts, no remote code, no `connect-src`.
-- The preload exposes a minimal, explicit API over `contextBridge` and never sits on
-  the per-frame data path.
-- **`sandbox: false`** — a known, deliberate weakening. The renderer needs Node-backed
-  preload messaging for the `MessagePort` and HEVC access-unit transport. This is a
-  gap: a renderer compromise would have a larger blast radius than with the sandbox
-  on. Contributions to move to a sandboxed design are welcome.
-- Renderers load only local `file://` content. The app makes no outbound HTTP requests.
-
-### Untrusted input from the network
-The client parses attacker-influenceable data (framebuffer rectangles, clipboard,
-RTP/SRTP packets). Mitigations in place:
-- Every `u32` length from the wire is bounds-capped before allocation (1 MiB
-  clipboard, 64 KiB desktop name, 32 MiB zlib chunk); overflow aborts the connection.
-- Decoders clip all writes to the framebuffer bounds.
-- Unknown/unsizeable encodings terminate the update rather than guessing offsets.
-- SRTP packets failing HMAC verification are dropped.
-
-These reduce, but do not eliminate, memory-safety-adjacent risks in a hand-written
-parser. This is JavaScript, so the failure mode is an exception or bad pixels rather
-than memory corruption — but a malicious or compromised server could still cause a
-denial of service.
-
-### Released binaries are unsigned
-Installers published to GitHub Releases are built by CI (`.github/workflows/release.yml`)
-and are **not code-signed** — no certificate is configured. Consequences:
-
-- Windows SmartScreen and macOS Gatekeeper will warn, and users must explicitly
-  override to run the app. That override is a real trust decision.
-- An unsigned binary cannot be cryptographically attributed to this repository.
-  If you need stronger assurance, **build from source** (`npm install && npm run dist:win`)
-  — the build is reproducible from a public commit and requires trusting no binary.
-- Releases are built on GitHub-hosted runners from the tagged commit, so the build
-  provenance is at least publicly auditable via the Actions log.
-
-## Dependency and supply-chain posture
-
-- **Runtime dependencies: one** — [`pako`](https://github.com/nodeca/pako) (DEFLATE).
-  A vendored copy of its ESM build lives at `src/vendor/pako.esm.mjs` so the browser
-  worker can import it. Keep the vendored copy in sync when upgrading.
-- **Build dependency: one** — `electron`.
-- All cryptography used by the RFB path (MD5, AES-128-ECB, modular exponentiation) is
-  implemented in-repo under `src/rfb/crypto/`, deliberately, so the portable protocol
-  core has no crypto dependency. It is **cross-checked against Node's `crypto`** in
-  the unit tests (RFC 1321 and FIPS-197 vectors, plus randomised differential tests).
-  Hand-rolled crypto is a risk; these implementations are used **only** for Apple's
-  legacy authentication scheme, which mandates exactly these primitives.
-
-### Scan results (last reviewed 2026-09-05)
-
-```
-npm audit            -> 0 vulnerabilities (runtime and dev)
-runtime dep tree     -> pako@2.2.0 only
-secret scan          -> no credentials, keys or tokens in tracked files
-electron             -> 44.2.0 (upgraded from 38.8.6 to clear a HIGH advisory:
-                        use-after-free in offscreen child window paint callback)
-CSP                  -> enforced on both renderer pages, no violations observed
-```
-
-Re-run with:
-
-```bash
-npm audit
-npm ls --omit=dev --depth=1
-npm test
-```
-
-## Hardening checklist for operators
-
-1. Run on a trusted LAN, or tunnel over SSH/VPN. Never expose 5900 publicly.
-2. Use a dedicated macOS account for screen sharing where practical.
-3. Leave the HP (`VNC_HP_PROBE`) path off unless you are developing it.
-4. Use **Forget** to remove stored credentials from a shared machine.
-5. Keep `npm audit` clean and Electron current — most of this project's realistic
-   attack surface is Chromium's.
+`src/` and `test/` retain an Electron reference implementation. Its ordinary RFB
+path does not encrypt screen/input traffic. Its threat model differs from the
+native application. See [historical notes](docs/legacy-security.md); those notes
+are not current native security guarantees.

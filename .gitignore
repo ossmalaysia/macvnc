@@ -2,6 +2,19 @@ node_modules/
 dist/
 *.log
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+rust-profile.json
+vnc-creds.json
+Local State
 
 .playwright-mcp/
-dist/
+
+.validation/
+
+/target/
+/rust/runtime/

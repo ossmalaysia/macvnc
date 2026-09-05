@@ -212,6 +212,8 @@ function onWorkerMessage(ev) {
     case 'resize':
       state.remoteW = msg.width | 0;
       state.remoteH = msg.height | 0;
+      canvas.width = state.remoteW;
+      canvas.height = state.remoteH;
       resEl.textContent = `${state.remoteW}x${state.remoteH}`;
       layout();
       break;
@@ -255,6 +257,7 @@ function applyStatus(kind, message) {
     case 'error':
     case 'failed':
     case 'authFailed':
+    case 'auth-failed':
       releaseEverything();
       setPhase('error', text || 'Connection failed');
       break;
@@ -262,7 +265,7 @@ function applyStatus(kind, message) {
     case 'disconnected':
     case 'ended':
       releaseEverything();
-      setPhase('disconnected', text || 'The remote host closed the connection');
+      if (state.phase !== 'error') setPhase('disconnected', text || 'The remote host closed the connection');
       break;
     case 'connected':
       setPhase('connected', text);
@@ -281,7 +284,7 @@ async function doConnect() {
   if (state.phase === 'connecting' || state.phase === 'connected') return;
 
   const host = hostEl.value.trim();
-  const port = Number.parseInt(portEl.value, 10);
+  const port = Number(portEl.value);
   if (!host) {
     setPhase('error', 'Host is required');
     return;
@@ -289,18 +292,6 @@ async function doConnect() {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     setPhase('error', `Invalid port: ${portEl.value}`);
     return;
-  }
-
-  // Persist before connecting, so a saved profile survives even a failed attempt.
-  if (rememberEl.checked && window.vnc.saveCreds) {
-    window.vnc.saveCreds({
-      host,
-      port,
-      username: userEl.value,
-      password: passEl.value,
-      profile: currentProfile(),
-      autoConnect: autoconnectEl.checked,
-    });
   }
 
   setPhase('connecting', `Connecting to ${host}:${port}`);
@@ -311,12 +302,22 @@ async function doConnect() {
   }
 
   try {
-    await window.vnc.connect({
+    if (rememberEl.checked && window.vnc.saveCreds) {
+      const saved = await window.vnc.saveCreds({
+        host, port, username: userEl.value, password: passEl.value,
+        profile: currentProfile(), autoConnect: autoconnectEl.checked,
+      });
+      if (saved && saved.ok === false) throw new Error(saved.error || 'Unable to save credentials');
+    }
+    const result = await window.vnc.connect({
       host,
       port,
       username: userEl.value,
       password: passEl.value,
     });
+    if (result && result.ok === false && state.phase === 'connecting') {
+      setPhase('error', result.error || 'Connection failed');
+    }
   } catch (err) {
     setPhase('error', errorMessage(err));
   }
@@ -328,7 +329,15 @@ form.addEventListener('submit', (ev) => {
 });
 
 forgetBtn.addEventListener('click', async () => {
-  if (window.vnc && window.vnc.clearCreds) await window.vnc.clearCreds();
+  try {
+    if (window.vnc && window.vnc.clearCreds) {
+      const result = await window.vnc.clearCreds();
+      if (result && result.ok === false) throw new Error(result.error || 'Unable to forget credentials');
+    }
+  } catch (err) {
+    setPhase('error', errorMessage(err));
+    return;
+  }
   rememberEl.checked = false;
   autoconnectEl.checked = false;
   passEl.value = '';

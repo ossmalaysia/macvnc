@@ -1,7 +1,7 @@
 {
   "name": "macvnc",
   "version": "1.0.0",
-  "description": "A free, from-scratch VNC client for macOS Screen Sharing (RFB 003.889 / Apple auth)",
+  "description": "MacVNC by AnchorSprint: native Rust HP client with a retained Electron reference implementation",
   "main": "src/main/index.js",
   "type": "module",
   "keywords": [
@@ -17,14 +17,18 @@
     "url": "https://github.com/jazztong/macvnc.git"
   },
   "scripts": {
-    "start": "electron .",
+    "start": "powershell -NoProfile -File scripts/run-rust.ps1",
     "test": "node --test",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
+    "dist": "powershell -NoProfile -File scripts/build-rust.ps1 -Package",
+    "dist:win": "powershell -NoProfile -File scripts/build-rust.ps1 -Package",
     "dist:linux": "electron-builder --linux",
-    "dist:mac": "electron-builder --mac"
+    "dist:mac": "electron-builder --mac",
+    "start:electron": "electron .",
+    "dist:electron": "electron-builder",
+    "dist:win:electron": "electron-builder --win"
   },
-  "license": "MIT",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
   "devDependencies": {
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3"
@@ -39,7 +43,10 @@
     "files": [
       "src/**/*",
       "package.json",
-      "!**/*.md"
+      "LICENSE",
+      "NOTICE.md",
+      "docs/THIRD_PARTY.md",
+      "rust/LICENSE-AGPL-3.0.txt"
     ],
     "directories": {
       "output": "dist"

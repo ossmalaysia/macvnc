@@ -1,0 +1,36 @@
+name: Native Rust checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    name: Native Windows checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: ./scripts/build-rust.ps1 -Package
+        shell: pwsh
+      - name: Test native HEVC decoder
+        shell: pwsh
+        run: |
+          $env:MACVNC_FFMPEG_DIR = Join-Path $pwd 'dist/macvnc-rust'
+          cargo test -p hp-media --test native_decode --locked -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Native decoder test failed' }
+          Compress-Archive -Path dist/macvnc-rust -DestinationPath dist/macvnc-rust-windows-x64.zip -Force
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macvnc-rust-windows-x64
+          path: dist/macvnc-rust-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 7
