@@ -2,7 +2,6 @@
   "name": "macvnc",
   "version": "0.1.6",
   "description": "MacVNC by AnchorSprint: native Rust HP client for macOS Screen Sharing",
-  "type": "module",
   "keywords": [
     "vnc",
     "rfb",
@@ -16,7 +15,6 @@
   },
   "scripts": {
     "start": "powershell -NoProfile -File scripts/run-rust.ps1",
-    "test": "node --test",
     "dist": "powershell -NoProfile -File scripts/build-rust.ps1 -Package",
     "dist:win": "powershell -NoProfile -File scripts/build-rust.ps1 -Package",
     "check:rust": "cargo test --workspace --locked"
@@ -24,56 +22,5 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "devDependencies": {},
-  "dependencies": {
-    "pako": "^2.1.0"
-  },
-  "build": {
-    "appId": "com.jazztong.macvnc",
-    "productName": "macvnc",
-    "copyright": "Copyright (c) 2026 Jazz Tong",
-    "files": [
-      "src/**/*",
-      "package.json",
-      "LICENSE",
-      "NOTICE.md",
-      "docs/THIRD_PARTY.md",
-      "rust/LICENSE-AGPL-3.0.txt"
-    ],
-    "directories": {
-      "output": "dist"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
-    },
-    "linux": {
-      "target": [
-        "AppImage"
-      ],
-      "category": "Network"
-    },
-    "mac": {
-      "target": [
-        "dmg"
-      ],
-      "category": "public.app-category.utilities"
-    }
-  }
+  "dependencies": {}
 }
