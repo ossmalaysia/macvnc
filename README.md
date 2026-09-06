@@ -21,8 +21,8 @@ Mac-to-Mac control through MacVNC is currently unsupported. On two Macs, use
 Apple's built-in **Screen Sharing** app (Finder → Go → Connect to Server →
 `vnc://<mac-address>`) or Remote Management instead.
 
-**Status: experimental native build.** Live 1080p validation passes authentication,
-decoding and missing-reference checks; see the [validation report](docs/rust-validation-2026-09-05.md).
+**Status: experimental native build.** Live 1080p validation covers authentication,
+decoding and missing-reference recovery.
 An idle login-screen black-picture issue is still under investigation; reconnecting
 currently restores the picture in the reported case.
 A language rewrite alone does not prove better FPS. Hardware HEVC acceleration is not currently enabled; the native
@@ -48,9 +48,6 @@ powershell -File scripts/build-rust.ps1 -Package
 The packaging script downloads a pinned, checksum-verified FFmpeg 7 LGPL shared
 build. Keep its DLLs beside the executable. `dist/macvnc-rust` is the portable
 package; it includes codec license/source notices. No Node installation is needed.
-`npm start` and `npm run dist:win` are compatibility wrappers around the Rust
-build scripts.
-
 For development, set `MACVNC_FFMPEG_DIR` to the directory containing
 `avcodec-61.dll`, `avutil-59.dll`, `swresample-5.dll`, and `swscale-8.dll` before
 `cargo run -p macvnc-app`.
@@ -88,7 +85,7 @@ and hardware video decode are not implemented.
 ## Roadmap
 
 - [ ] Replace unmaintained transitive `paste` and `ttf-parser` dependencies through
-  compatible upstream upgrades; see the [security review](docs/security-review-2026-09-05.md).
+  compatible upstream upgrades; see the dependency notes in [SECURITY.md](SECURITY.md).
 
 - [ ] **Remote audio playback:** play the Mac's system audio through the Windows
   client, including YouTube on the Mac mini. Currently the client sends an audio

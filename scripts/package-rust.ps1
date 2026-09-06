@@ -29,8 +29,6 @@ foreach ($file in @('Cargo.toml','Cargo.lock','rust-toolchain.toml','LICENSE','R
 Copy-Item -LiteralPath "$repo/rust/LICENSE-AGPL-3.0.txt" -Destination "$source/rust"
 Copy-Item -LiteralPath "$repo/rust/AGENTS.md" -Destination "$source/rust"
 Copy-Item -LiteralPath "$repo/docs/THIRD_PARTY.md" -Destination "$source/docs"
-Copy-Item -LiteralPath "$repo/docs/rust-validation-2026-09-05.md" -Destination "$source/docs"
-Copy-Item -LiteralPath "$repo/docs/security-review-2026-09-05.md" -Destination "$source/docs"
 Copy-Item -LiteralPath "$repo/docs/CONTRACTS.md" -Destination "$source/docs"
 foreach ($crate in @('hp-protocol','hp-media','macvnc-app')) {
     $crateSource = Join-Path $repo "rust/crates/$crate"
