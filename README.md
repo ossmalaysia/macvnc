@@ -34,6 +34,13 @@ Download the latest **native Rust HP** package from [GitHub Releases](https://gi
 
 Releases are unsigned, so Windows SmartScreen may require explicit approval. Verify `SHA256SUMS.txt` before launching a downloaded package.
 
+## What it looks like
+
+The connection screen keeps setup focused and shows the active HP mode, FPS,
+latency, secure credential storage, and keyboard shortcut profile.
+
+![MacVNC connection screen](docs/screenshots/connection-screen.png)
+
 ## Build and run from source (Windows x64)
 
 Install stable Rust using rustup and Visual Studio C++ build tools with the
