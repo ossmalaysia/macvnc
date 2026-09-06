@@ -70,11 +70,11 @@ jobs:
             release/SHA256SUMS.txt
           fail_on_unmatched_files: true
           generate_release_notes: true
-          draft: true
+          draft: false
           body: |
             Experimental native Rust HP client for Windows x64.
             Developed by AnchorSprint — https://anchorsprint.com
             Extract the entire archive and run macvnc-app.exe beside its DLLs.
             Unsigned build; native FFmpeg software HEVC decoding.
-            Review the included license/source materials before making this draft public.
+            Review the included license and source materials before use.
             Commercial/customization enquiries: oss@anchorsprint.com.
