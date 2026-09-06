@@ -71,3 +71,43 @@ but does not by itself establish publisher identity or a reproducible build.
 
 The supported application is the native Rust client. The protocol fixture tree
 is used only for offline regression coverage and is not packaged for users.
+
+## Security review — 2026-09-06
+
+Checks performed against the current `main` branch:
+
+- `cargo audit`: completed successfully with two **low-risk maintenance
+  warnings**, `paste 1.0.15` (RUSTSEC-2024-0436) and `ttf-parser 0.25.1`
+  (RUSTSEC-2026-0192). Neither advisory reports a known exploitable
+  vulnerability; both are unmaintained transitive dependencies. They cannot be
+  removed safely without changing the current GUI/font dependency tree, so they
+  remain tracked for a future dependency update.
+- `npm audit --omit=dev`: no production vulnerabilities reported. Node files
+  are build and source-hygiene utilities, not part of the shipped client.
+- Repository secret scan: no credentials, private keys or tokens found.
+  Synthetic password strings in profile unit tests are test fixtures only (**low,
+  accepted**).
+- Workflow review: CI and release workflows use read-only defaults, pinned
+  action SHAs, disabled checkout credentials, separate write-scoped publishing,
+  and a protected release environment. No `pull_request_target` workflow was
+  found.
+- Rust workspace tests and Clippy pass with warnings denied.
+
+### Open limitations
+
+**High:** none found in this review.
+
+**Medium:** Apple Screen Sharing type-30 authentication and the legacy AES-CBC
+control channel do not provide modern server identity verification. The client
+must continue to require a trusted destination/network; replacing this requires
+compatibility with Apple's protocol and cannot be fixed locally without breaking
+interoperability.
+
+**Low:** FFmpeg is native C code reached through an unsafe Rust ABI boundary;
+upstream decoder vulnerabilities remain possible. Keep DLL loading directories
+trusted and update the bundled FFmpeg release. The two unmaintained Rust crates
+listed above are also tracked as low-risk maintenance debt.
+
+This review is a point-in-time engineering check, not an independent security
+audit or a guarantee that future dependencies, releases or protocol peers are
+safe.
