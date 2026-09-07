@@ -39,6 +39,7 @@ struct App {
     cancelling: bool,
     auto_pending: bool,
     window_drag_anchor: [Option<egui::Pos2>; 2],
+    clipboard: ClipboardSync,
 }
 impl App {
     fn new(
@@ -104,6 +105,7 @@ impl App {
             cancelling: false,
             auto_pending,
             window_drag_anchor: [None; 2],
+            clipboard: ClipboardSync::default(),
         }
     }
     fn send(&self, command: Command) {
@@ -346,27 +348,10 @@ impl App {
                         });
                     }
                 }
-                // egui turns Ctrl/Cmd+C and Ctrl/Cmd+X into semantic
-                // clipboard events; forward the corresponding key as well.
-                egui::Event::Copy => {
-                    self.send(Command::Key {
-                        keysym: b'c' as u32,
-                        down: true,
-                    });
-                    self.send(Command::Key {
-                        keysym: b'c' as u32,
-                        down: false,
-                    });
-                }
-                egui::Event::Cut => {
-                    self.send(Command::Key {
-                        keysym: b'x' as u32,
-                        down: true,
-                    });
-                    self.send(Command::Key {
-                        keysym: b'x' as u32,
-                        down: false,
-                    });
+                event @ (egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)) => {
+                    for command in self.clipboard.commands(event) {
+                        self.send(command);
+                    }
                 }
                 egui::Event::Text(text) if !text.is_ascii() => {
                     for c in text.chars() {
@@ -382,11 +367,65 @@ impl App {
                         });
                     }
                 }
-                egui::Event::Paste(text) => self.send(Command::Clipboard(text)),
                 _ => (),
             }
         }
     }
+}
+// egui turns Ctrl/Cmd+C, +X and +V into semantic clipboard events and swallows
+// the letter key, so the shortcut itself never reaches the Mac. Rebuild what the
+// remote needs for each one.
+//
+// Paste additionally carries the *local* clipboard, but text copied inside the
+// session lives in the Mac's own pasteboard. Forwarding local text on every
+// paste would clobber that, so only send it when it has actually changed and
+// never on the paste immediately following a copy or cut made on the Mac.
+#[derive(Default)]
+struct ClipboardSync {
+    local: Option<String>,
+    remote_owns: bool,
+}
+impl ClipboardSync {
+    fn commands(&mut self, event: egui::Event) -> Vec<Command> {
+        match event {
+            egui::Event::Copy => {
+                self.remote_owns = true;
+                tap(b'c')
+            }
+            egui::Event::Cut => {
+                self.remote_owns = true;
+                tap(b'x')
+            }
+            egui::Event::Paste(text) => {
+                let changed = self.local.as_deref() != Some(text.as_str());
+                self.local = Some(text.clone());
+                // Consume the flag unconditionally: `&&` would short-circuit past
+                // it whenever the local clipboard is unchanged, latching it on and
+                // suppressing the next genuine local paste.
+                let remote_owns = std::mem::take(&mut self.remote_owns);
+                let mut commands = Vec::new();
+                // The pasteboard must be set before the keystroke that reads it.
+                if changed && !remote_owns {
+                    commands.push(Command::Clipboard(text));
+                }
+                commands.extend(tap(b'v'));
+                commands
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+fn tap(letter: u8) -> Vec<Command> {
+    vec![
+        Command::Key {
+            keysym: letter as u32,
+            down: true,
+        },
+        Command::Key {
+            keysym: letter as u32,
+            down: false,
+        },
+    ]
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -858,4 +897,66 @@ fn live_smoke(args: &[String]) -> anyhow::Result<()> {
         bail!("Video loss recovery was not demonstrated");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn describe(commands: &[Command]) -> Vec<String> {
+        commands
+            .iter()
+            .map(|command| match command {
+                Command::Clipboard(text) => format!("clipboard:{text}"),
+                Command::Key { keysym, down } => format!("key:{keysym}:{down}"),
+                _ => "other".to_string(),
+            })
+            .collect()
+    }
+    fn paste(sync: &mut ClipboardSync, local: &str) -> Vec<String> {
+        describe(&sync.commands(egui::Event::Paste(local.to_string())))
+    }
+    const V_DOWN: &str = "key:118:true";
+    const V_UP: &str = "key:118:false";
+    #[test]
+    fn copy_and_cut_replay_their_letter_without_touching_the_pasteboard() {
+        let mut sync = ClipboardSync::default();
+        assert_eq!(
+            describe(&sync.commands(egui::Event::Copy)),
+            ["key:99:true", "key:99:false"]
+        );
+        assert_eq!(
+            describe(&sync.commands(egui::Event::Cut)),
+            ["key:120:true", "key:120:false"]
+        );
+    }
+    #[test]
+    fn paste_after_copying_on_the_mac_never_clobbers_the_remote_pasteboard() {
+        // The regression this guards: egui hands us stale local text on the
+        // first paste, which would otherwise overwrite what was just copied
+        // inside the session.
+        let mut sync = ClipboardSync::default();
+        sync.commands(egui::Event::Copy);
+        assert_eq!(paste(&mut sync, "stale windows text"), [V_DOWN, V_UP]);
+    }
+    #[test]
+    fn repeated_pastes_send_the_local_clipboard_only_once() {
+        let mut sync = ClipboardSync::default();
+        assert_eq!(
+            paste(&mut sync, "hi"),
+            ["clipboard:hi", V_DOWN, V_UP],
+            "a fresh local clipboard must reach the Mac"
+        );
+        assert_eq!(paste(&mut sync, "hi"), [V_DOWN, V_UP]);
+    }
+    #[test]
+    fn newly_copied_local_text_still_reaches_the_mac() {
+        let mut sync = ClipboardSync::default();
+        paste(&mut sync, "first");
+        sync.commands(egui::Event::Copy);
+        paste(&mut sync, "first");
+        assert_eq!(
+            paste(&mut sync, "second"),
+            ["clipboard:second", V_DOWN, V_UP]
+        );
+    }
 }
