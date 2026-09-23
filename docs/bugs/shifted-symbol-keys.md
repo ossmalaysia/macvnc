@@ -5,6 +5,7 @@
 Typing `!`, `+`, `?`, `{`, `}`, `:` or `|` in the remote view sends nothing to the
 Mac. Every other shifted symbol (`@ # $ % ^ & * ( ) _ " < > ~`) works.
 
+- **Status:** Fixed in v0.1.8 (`keysym()` maps the logical-symbol keys)
 - **Component:** `rust/crates/macvnc-app/src/input.rs` — `keysym()`
 - **Severity:** High. Breaks passwords, shell commands, code editing and URLs.
 - **Platform:** Windows client (egui/eframe 0.31.1, winit) → macOS HP server

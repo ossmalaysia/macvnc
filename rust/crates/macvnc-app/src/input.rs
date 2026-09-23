@@ -77,6 +77,15 @@ pub fn keysym(key: Key, shift: bool) -> Option<u32> {
     }
     let c = match key {
         Key::Space => ' ',
+        // egui reports these shifted symbols as their own logical keys
+        // (Shift+1 arrives as Exclamationmark, not Num1), so map them directly.
+        Key::Exclamationmark => '!',
+        Key::Plus => '+',
+        Key::Questionmark => '?',
+        Key::OpenCurlyBracket => '{',
+        Key::CloseCurlyBracket => '}',
+        Key::Colon => ':',
+        Key::Pipe => '|',
         Key::Minus => {
             if shift {
                 '_'
@@ -187,5 +196,19 @@ mod tests {
     fn shifted_digits_and_unicode_keys() {
         assert_eq!(keysym(Key::Num2, true), Some('@' as u32));
         assert_eq!(keysym(Key::A, false), Some('a' as u32));
+    }
+    #[test]
+    fn logical_shifted_symbols_map_to_their_characters() {
+        for (key, c) in [
+            (Key::Exclamationmark, '!'),
+            (Key::Plus, '+'),
+            (Key::Questionmark, '?'),
+            (Key::OpenCurlyBracket, '{'),
+            (Key::CloseCurlyBracket, '}'),
+            (Key::Colon, ':'),
+            (Key::Pipe, '|'),
+        ] {
+            assert_eq!(keysym(key, true), Some(c as u32), "{key:?}");
+        }
     }
 }
