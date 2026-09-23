@@ -40,6 +40,7 @@ struct App {
     auto_pending: bool,
     window_drag_anchor: [Option<egui::Pos2>; 2],
     clipboard: ClipboardSync,
+    pending_paste: VecDeque<Command>,
 }
 impl App {
     fn new(
@@ -106,6 +107,7 @@ impl App {
             auto_pending,
             window_drag_anchor: [None; 2],
             clipboard: ClipboardSync::default(),
+            pending_paste: VecDeque::new(),
         }
     }
     fn send(&self, command: Command) {
@@ -167,6 +169,32 @@ impl App {
         if !self.remember {
             self.profile.password.zeroize();
         }
+    }
+    /// Feeds a queued paste to the backend a few commands at a time.
+    ///
+    /// The command channel holds 256 entries and treats a full queue as fatal:
+    /// `CommandSender::send` cancels the session rather than risk a dropped key
+    /// release latching a key down on the Mac. A paste is two commands per
+    /// character, so handing the whole thing over in one frame would disconnect
+    /// the session outright. Stay well inside the channel's capacity instead.
+    fn drain_pending_paste(&mut self, ctx: &egui::Context) {
+        if self.pending_paste.is_empty() {
+            return;
+        }
+        // A queue that outlives its session would type the tail of the old
+        // clipboard into whatever connects next. Commands never cross a session.
+        if !self.connected {
+            self.pending_paste.clear();
+            return;
+        }
+        for command in self
+            .pending_paste
+            .drain(..PASTE_COMMANDS_PER_FRAME.min(self.pending_paste.len()))
+            .collect::<Vec<_>>()
+        {
+            self.send(command);
+        }
+        ctx.request_repaint();
     }
     fn release_input(&mut self) {
         for (_, keysym) in self.pressed.drain() {
@@ -240,23 +268,31 @@ impl App {
         });
         let modifiers = event_modifiers.unwrap_or(frame_modifiers);
         let next = input::modifiers(modifiers, self.profile.profile == "native");
-        for keysym in &self.modifiers {
-            if !next.contains(keysym) {
-                self.send(Command::Key {
-                    keysym: *keysym,
-                    down: false,
-                });
+        // A paste in flight spans several frames. Re-pressing Ctrl mid-paste would
+        // latch Command on the Mac and turn the remaining characters into
+        // shortcuts, so leave the modifier state alone until the queue drains.
+        // Whatever is still physically held is re-sent on the first frame after.
+        // Only the modifier diff pauses: key releases and pointer events must keep
+        // flowing, or a key held when the paste began would stay down on the Mac.
+        if self.pending_paste.is_empty() {
+            for keysym in &self.modifiers {
+                if !next.contains(keysym) {
+                    self.send(Command::Key {
+                        keysym: *keysym,
+                        down: false,
+                    });
+                }
             }
-        }
-        for keysym in &next {
-            if !self.modifiers.contains(keysym) {
-                self.send(Command::Key {
-                    keysym: *keysym,
-                    down: true,
-                });
+            for keysym in &next {
+                if !self.modifiers.contains(keysym) {
+                    self.send(Command::Key {
+                        keysym: *keysym,
+                        down: true,
+                    });
+                }
             }
+            self.modifiers = next;
         }
-        self.modifiers = next;
         let composed_text = events
             .iter()
             .any(|event| matches!(event, egui::Event::Text(text) if !text.is_ascii()));
@@ -349,9 +385,29 @@ impl App {
                     }
                 }
                 event @ (egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)) => {
-                    for command in self.clipboard.commands(event) {
-                        self.send(command);
+                    if self.clipboard.will_type(&event) {
+                        // Ctrl is still physically held at this point and is
+                        // latched as Command on the Mac. Drop it before typing;
+                        // the next frame re-presses it if it is still down.
+                        for keysym in std::mem::take(&mut self.modifiers) {
+                            self.send(Command::Key {
+                                keysym,
+                                down: false,
+                            });
+                        }
                     }
+                    // Typing a very large clipboard would hold the session for
+                    // minutes, so it is capped. Say so rather than silently
+                    // dropping the tail; the pasteboard record still has it.
+                    if let egui::Event::Paste(text) = &event {
+                        let total = text.chars().count();
+                        if self.clipboard.will_type(&event) && total > MAX_TYPED_PASTE_CHARS {
+                            self.status = format!(
+                                "Typed the first {MAX_TYPED_PASTE_CHARS} of {total} characters · press ⌘V on the Mac for the rest"
+                            );
+                        }
+                    }
+                    self.pending_paste.extend(self.clipboard.commands(event));
                 }
                 egui::Event::Text(text) if !text.is_ascii() => {
                     for c in text.chars() {
@@ -376,16 +432,38 @@ impl App {
 // the letter key, so the shortcut itself never reaches the Mac. Rebuild what the
 // remote needs for each one.
 //
-// Paste additionally carries the *local* clipboard, but text copied inside the
-// session lives in the Mac's own pasteboard. Forwarding local text on every
-// paste would clobber that, so only send it when it has actually changed and
-// never on the paste immediately following a copy or cut made on the Mac.
+// Paste has two distinct cases. Text copied *inside* the session already lives in
+// the Mac's own pasteboard, so replaying Command-V is exactly right. Text copied on
+// Windows is not on that pasteboard: Apple's HP control channel does not apply our
+// cut-text record to it, so a Command-V there pastes nothing at all. Type those
+// characters instead, which also carries Unicode the Latin-1 cut-text record could
+// not represent.
+/// Typing is one round trip per character; a very large paste would otherwise
+/// flood the control channel and appear to hang the session.
+const MAX_TYPED_PASTE_CHARS: usize = 8192;
+/// Commands handed to the backend per frame while a paste drains. Must stay well
+/// below the command channel's 256-entry capacity, which a paste would otherwise
+/// overrun. Half the channel leaves room for the pointer and key events the user
+/// generates alongside it, and enters roughly 3800 characters per second at 60fps.
+const PASTE_COMMANDS_PER_FRAME: usize = 128;
+/// Characters the cut-text record may carry. `send_clipboard` encodes one byte
+/// per character into a record capped at 65498 bytes including its 8-byte header,
+/// and returns an error beyond that which would disconnect the session.
+const CLIPBOARD_RECORD_CHAR_LIMIT: usize = 65_000;
+// A paste is two commands per character; a frame's worth must never fill the
+// channel, because a full channel cancels the session instead of dropping input.
+const _: () = assert!(PASTE_COMMANDS_PER_FRAME < backend::COMMAND_QUEUE_CAPACITY);
 #[derive(Default)]
 struct ClipboardSync {
-    local: Option<String>,
     remote_owns: bool,
 }
 impl ClipboardSync {
+    /// True when this event will be typed out, which requires the caller to
+    /// release held modifiers first: typing while Command is latched on the Mac
+    /// fires shortcuts (Command-S, Command-W, Command-Q) instead of entering text.
+    fn will_type(&self, event: &egui::Event) -> bool {
+        matches!(event, egui::Event::Paste(_)) && !self.remote_owns
+    }
     fn commands(&mut self, event: egui::Event) -> Vec<Command> {
         match event {
             egui::Event::Copy => {
@@ -397,23 +475,43 @@ impl ClipboardSync {
                 tap(b'x')
             }
             egui::Event::Paste(text) => {
-                let changed = self.local.as_deref() != Some(text.as_str());
-                self.local = Some(text.clone());
-                // Consume the flag unconditionally: `&&` would short-circuit past
-                // it whenever the local clipboard is unchanged, latching it on and
-                // suppressing the next genuine local paste.
-                let remote_owns = std::mem::take(&mut self.remote_owns);
-                let mut commands = Vec::new();
-                // The pasteboard must be set before the keystroke that reads it.
-                if changed && !remote_owns {
-                    commands.push(Command::Clipboard(text));
+                // Consume the flag unconditionally so a Mac-side copy latches it
+                // for exactly one paste.
+                if std::mem::take(&mut self.remote_owns) {
+                    tap(b'v')
+                } else {
+                    typed(&text)
                 }
-                commands.extend(tap(b'v'));
-                commands
             }
             _ => Vec::new(),
         }
     }
+}
+/// Maps text to the same keysym scheme the direct typing path uses. The cut-text
+/// record still goes out first so a later native Command-V on the Mac can recover
+/// text too long to type, but nothing depends on the Mac honouring it.
+///
+/// The two carry different amounts on purpose. Typing costs a round trip per
+/// character, so it stops at `MAX_TYPED_PASTE_CHARS`; the record is one message
+/// and only has to stay under the protocol's limit, which `send_clipboard`
+/// enforces by returning an error the session loop would turn into a disconnect.
+fn typed(text: &str) -> Vec<Command> {
+    let pasteboard: String = text.chars().take(CLIPBOARD_RECORD_CHAR_LIMIT).collect();
+    let mut commands = vec![Command::Clipboard(pasteboard)];
+    for c in text.chars().take(MAX_TYPED_PASTE_CHARS) {
+        let keysym = match c {
+            '\n' | '\r' => 0xff0d,
+            '\t' => 0xff09,
+            c if (c as u32) <= 0xff => c as u32,
+            c => 0x01000000 | c as u32,
+        };
+        commands.push(Command::Key { keysym, down: true });
+        commands.push(Command::Key {
+            keysym,
+            down: false,
+        });
+    }
+    commands
 }
 fn tap(letter: u8) -> Vec<Command> {
     vec![
@@ -433,6 +531,9 @@ impl eframe::App for App {
             self.auto_pending = false;
             self.connect();
         }
+        // Runs before the UI so a paste keeps draining even if the pointer leaves
+        // the remote view part-way through.
+        self.drain_pending_paste(ctx);
         let mut latest = None;
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
@@ -918,6 +1019,84 @@ mod tests {
     const V_DOWN: &str = "key:118:true";
     const V_UP: &str = "key:118:false";
     #[test]
+    fn paste_types_the_local_text_instead_of_relying_on_the_remote_pasteboard() {
+        // Apple's HP control channel does not apply our cut-text record to the
+        // Mac pasteboard, so a synthesized Command-V pastes nothing. Send the
+        // characters themselves instead.
+        let mut sync = ClipboardSync::default();
+        assert_eq!(
+            paste(&mut sync, "hi"),
+            [
+                "clipboard:hi",
+                "key:104:true",
+                "key:104:false",
+                "key:105:true",
+                "key:105:false"
+            ],
+            "each character must be typed as its own key press"
+        );
+    }
+    #[test]
+    fn typed_paste_maps_non_latin1_characters_to_unicode_keysyms() {
+        // The old cut-text path flattened anything above U+00FF to '?'.
+        let mut sync = ClipboardSync::default();
+        assert_eq!(
+            paste(&mut sync, "\u{4e2d}"),
+            [
+                "clipboard:\u{4e2d}",
+                "key:16797229:true",
+                "key:16797229:false"
+            ]
+        );
+    }
+    #[test]
+    fn typed_paste_sends_newlines_as_return() {
+        let mut sync = ClipboardSync::default();
+        assert_eq!(
+            paste(&mut sync, "\n"),
+            ["clipboard:\n", "key:65293:true", "key:65293:false"]
+        );
+    }
+    #[test]
+    fn oversized_paste_is_truncated_rather_than_flooding_the_remote() {
+        let mut sync = ClipboardSync::default();
+        let commands = paste(&mut sync, &"a".repeat(MAX_TYPED_PASTE_CHARS + 500));
+        assert_eq!(
+            commands.len(),
+            MAX_TYPED_PASTE_CHARS * 2 + 1,
+            "the cut-text record plus a press and release per capped character"
+        );
+    }
+    #[test]
+    fn oversized_paste_still_puts_the_whole_text_on_the_mac_pasteboard() {
+        // Typing is capped because it costs a round trip per character, but the
+        // record is one message: it should carry everything that fits so a native
+        // Command-V on the Mac recovers the part we did not type.
+        let mut sync = ClipboardSync::default();
+        let text = "a".repeat(MAX_TYPED_PASTE_CHARS + 500);
+        let commands = sync.commands(egui::Event::Paste(text));
+        match &commands[0] {
+            Command::Clipboard(sent) => assert_eq!(
+                sent.chars().count(),
+                MAX_TYPED_PASTE_CHARS + 500,
+                "the record is not limited by the typing cap"
+            ),
+            _ => panic!("the pasteboard record must come first"),
+        }
+    }
+    #[test]
+    fn the_pasteboard_record_stays_inside_the_protocol_limit() {
+        let mut sync = ClipboardSync::default();
+        let text = "a".repeat(CLIPBOARD_RECORD_CHAR_LIMIT * 2);
+        let commands = sync.commands(egui::Event::Paste(text));
+        match &commands[0] {
+            // One byte per character plus an 8-byte header must stay under the
+            // 65498-byte record limit send_clipboard rejects beyond.
+            Command::Clipboard(sent) => assert!(sent.len() + 8 <= 65498),
+            _ => panic!("the pasteboard record must come first"),
+        }
+    }
+    #[test]
     fn copy_and_cut_replay_their_letter_without_touching_the_pasteboard() {
         let mut sync = ClipboardSync::default();
         assert_eq!(
@@ -939,24 +1118,50 @@ mod tests {
         assert_eq!(paste(&mut sync, "stale windows text"), [V_DOWN, V_UP]);
     }
     #[test]
-    fn repeated_pastes_send_the_local_clipboard_only_once() {
+    fn repeated_local_pastes_each_type_their_text() {
+        // Unlike the pasteboard path, typing has nothing to deduplicate: the
+        // same text pasted twice must be entered twice.
         let mut sync = ClipboardSync::default();
-        assert_eq!(
-            paste(&mut sync, "hi"),
-            ["clipboard:hi", V_DOWN, V_UP],
-            "a fresh local clipboard must reach the Mac"
-        );
-        assert_eq!(paste(&mut sync, "hi"), [V_DOWN, V_UP]);
+        let expected = [
+            "clipboard:hi",
+            "key:104:true",
+            "key:104:false",
+            "key:105:true",
+            "key:105:false",
+        ];
+        assert_eq!(paste(&mut sync, "hi"), expected);
+        assert_eq!(paste(&mut sync, "hi"), expected);
     }
     #[test]
-    fn newly_copied_local_text_still_reaches_the_mac() {
+    fn a_mac_side_copy_latches_command_v_for_exactly_one_paste() {
         let mut sync = ClipboardSync::default();
-        paste(&mut sync, "first");
         sync.commands(egui::Event::Copy);
-        paste(&mut sync, "first");
         assert_eq!(
-            paste(&mut sync, "second"),
-            ["clipboard:second", V_DOWN, V_UP]
+            paste(&mut sync, "windows text"),
+            [V_DOWN, V_UP],
+            "the paste right after a Mac-side copy must use the Mac's own pasteboard"
+        );
+        assert_eq!(
+            paste(&mut sync, "hi"),
+            [
+                "clipboard:hi",
+                "key:104:true",
+                "key:104:false",
+                "key:105:true",
+                "key:105:false"
+            ],
+            "the following paste reverts to typing the Windows clipboard"
+        );
+    }
+    #[test]
+    fn will_type_reports_when_modifiers_must_be_released_first() {
+        let mut sync = ClipboardSync::default();
+        assert!(sync.will_type(&egui::Event::Paste("hi".into())));
+        assert!(!sync.will_type(&egui::Event::Copy));
+        sync.commands(egui::Event::Copy);
+        assert!(
+            !sync.will_type(&egui::Event::Paste("hi".into())),
+            "a Command-V replay keeps the modifier held"
         );
     }
 }

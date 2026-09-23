@@ -113,8 +113,11 @@ pub struct ProbeReport {
     pub peak_frame_bytes: usize,
     pub media_diagnostics: String,
 }
+/// Input commands the backend can hold. A full queue cancels the session rather
+/// than drop a key release, so producers must stay inside this bound.
+pub const COMMAND_QUEUE_CAPACITY: usize = 256;
 pub fn start(repaint: Arc<dyn Fn() + Send + Sync>) -> Backend {
-    let (sender, rx) = mpsc::sync_channel(256);
+    let (sender, rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let cancelled = Arc::new(AtomicBool::new(false));
     let commands = CommandSender {
         sender,
