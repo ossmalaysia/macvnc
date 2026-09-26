@@ -32,6 +32,9 @@ struct App {
     pointer: (u16, u16),
     presented: VecDeque<Instant>,
     network_rtt: Option<Duration>,
+    /// When the OS estimate last changed. It only moves when the Mac ACKs data
+    /// we sent, so an unchanged value means no new sample, not a steady link.
+    rtt_changed: Instant,
     pending_frame: bool,
     started: Instant,
     smoke: bool,
@@ -99,6 +102,7 @@ impl App {
             pointer: (0, 0),
             presented: VecDeque::new(),
             network_rtt: None,
+            rtt_changed: Instant::now(),
             pending_frame: false,
             started: Instant::now(),
             smoke,
@@ -513,6 +517,22 @@ fn typed(text: &str) -> Vec<Command> {
     }
     commands
 }
+/// Toolbar text for the network RTT. `unchanged_for` is how long the OS
+/// estimate has held the same value; past a threshold it is an old sample
+/// (for example a spike from a busy moment) rather than the current latency.
+fn rtt_label(rtt: Option<Duration>, unchanged_for: Duration) -> String {
+    let Some(rtt) = rtt else {
+        return "RTT —".into();
+    };
+    let ms = rtt.as_secs_f64() * 1000.0;
+    // A few 1-second reads with no change means no input has been ACKed since.
+    if unchanged_for >= RTT_STALE_AFTER {
+        format!("RTT {ms:.1} ms (stale)")
+    } else {
+        format!("RTT {ms:.1} ms")
+    }
+}
+const RTT_STALE_AFTER: Duration = Duration::from_secs(5);
 fn tap(letter: u8) -> Vec<Command> {
     vec![
         Command::Key {
@@ -538,7 +558,12 @@ impl eframe::App for App {
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
                 Event::Status(s) => self.status = s,
-                Event::NetworkRtt(rtt) => self.network_rtt = rtt,
+                Event::NetworkRtt(rtt) => {
+                    if rtt != self.network_rtt {
+                        self.rtt_changed = Instant::now();
+                    }
+                    self.network_rtt = rtt;
+                }
                 Event::Connected { width, height } => {
                     if self.cancelling {
                         continue;
@@ -622,11 +647,8 @@ impl eframe::App for App {
                 );
                 ui.separator();
                 ui.label(format!("{} fps", self.presented.len()));
-                ui.label(self.network_rtt.map_or_else(
-                    || "RTT —".into(),
-                    |rtt| format!("RTT {:.1} ms", rtt.as_secs_f64() * 1000.0),
-                ))
-                .on_hover_text("Network latency: the OS-estimated TCP round-trip time, read every second. The estimate may stay unchanged while idle. Excludes video decoding and display delay. — means unavailable.");
+                ui.label(rtt_label(self.network_rtt, self.rtt_changed.elapsed()))
+                .on_hover_text("Network latency: the OS-estimated TCP round-trip time, read every second. It only updates when the Mac acknowledges input you send, so it is marked stale while you are idle; move the mouse to refresh it. Excludes video decoding and display delay. — means unavailable.");
                 if (self.connected || self.connecting)
                     && ui
                         .add_enabled(
@@ -1035,6 +1057,17 @@ mod tests {
             ],
             "each character must be typed as its own key press"
         );
+    }
+    #[test]
+    fn rtt_label_marks_unchanged_estimate_stale() {
+        let rtt = Some(Duration::from_micros(12_345));
+        assert_eq!(rtt_label(None, Duration::ZERO), "RTT —");
+        let fresh = rtt_label(rtt, Duration::ZERO);
+        assert!(fresh.contains("12.3 ms"), "{fresh}");
+        assert!(!fresh.contains("stale"), "{fresh}");
+        let old = rtt_label(rtt, Duration::from_secs(60));
+        assert!(old.contains("12.3 ms"), "{old}");
+        assert!(old.contains("stale"), "{old}");
     }
     #[test]
     fn typed_paste_maps_non_latin1_characters_to_unicode_keysyms() {
