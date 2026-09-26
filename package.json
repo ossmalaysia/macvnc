@@ -1,6 +1,6 @@
 {
   "name": "macvnc",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "MacVNC by AnchorSprint: native Rust HP client for macOS Screen Sharing",
   "keywords": [
     "vnc",
