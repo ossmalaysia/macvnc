@@ -13,7 +13,7 @@ eframe = { version = "0.31.1", default-features = false, features = ["default_fo
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 zeroize = "1"
 tempfile = "3"
 
