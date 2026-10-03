@@ -6,7 +6,7 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1"
-aes = { version = "0.8", features = ["zeroize"] }
+aes = { version = "0.9", features = ["zeroize"] }
 ctr = "0.9"
 hmac = "0.12"
 sha1 = "0.10"
