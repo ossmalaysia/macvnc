@@ -1,6 +1,6 @@
 [package]
 name = "macvnc-app"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "MacVNC High Performance Screen Sharing client"
@@ -16,6 +16,11 @@ base64 = "0.23"
 aes-gcm = "0.10"
 zeroize = "1"
 tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+sha2 = "0.10"
+semver = "1"
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 anyhow = "1"
 hp-protocol = { path = "../hp-protocol" }

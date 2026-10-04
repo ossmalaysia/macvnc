@@ -1,5 +1,7 @@
 //! Native Apple HP authentication and encrypted control transport.
 //! No credentials or cryptographic material are logged or formatted with Debug.
+mod control_io;
+pub mod file_transfer;
 pub mod metadata;
 mod network_stats;
 mod offer;
@@ -38,6 +40,9 @@ pub struct HpConnection {
     tcp: TcpStream,
     records: RecordLayer,
     pending: Vec<u8>,
+    outbound: control_io::Outbound,
+    file_decoder: file_transfer::Decoder,
+    file_messages: Vec<file_transfer::Message>,
     pub width: u16,
     pub height: u16,
     pub video_socket: UdpSocket,
@@ -244,6 +249,9 @@ impl HpConnection {
             tcp,
             records,
             pending: Vec::new(),
+            outbound: control_io::Outbound::default(),
+            file_decoder: file_transfer::Decoder::default(),
+            file_messages: Vec::new(),
             width,
             height,
             video_socket,
@@ -333,18 +341,31 @@ impl HpConnection {
         self.write_record(&wire)
     }
     fn write_record(&mut self, wire: &[u8]) -> Result<()> {
-        self.tcp.set_nonblocking(false)?;
-        self.tcp.set_write_timeout(Some(Duration::from_secs(3)))?;
-        let r = self.tcp.write_all(wire);
-        let restore = self.tcp.set_nonblocking(true);
-        r?;
-        restore?;
+        self.outbound.push(wire.to_vec())?;
+        self.outbound.flush(&mut self.tcp)?;
         Ok(())
+    }
+    /// Returns false before encrypting if bulk output must yield to input/media.
+    pub fn try_send_file_message(&mut self, message: &[u8]) -> Result<bool> {
+        ensure!(message.first() == Some(&0x22), "not a native file message");
+        if self.outbound.bytes() > 64 * 1024 {
+            return Ok(false);
+        }
+        self.send(message)?;
+        Ok(true)
+    }
+    pub fn take_file_messages(&mut self) -> Vec<file_transfer::Message> {
+        std::mem::take(&mut self.file_messages)
+    }
+    pub fn file_message_pending(&self) -> bool {
+        self.file_decoder.is_pending()
     }
     /// Drains available records without discarding partial TCP headers or bodies.
     pub fn poll_control(&mut self) -> Result<Vec<Vec<u8>>> {
+        self.outbound.flush(&mut self.tcp)?;
         let mut chunk = [0u8; 8192];
-        loop {
+        // Yield regularly even when a file sender keeps the TCP socket readable.
+        for _ in 0..8 {
             match self.tcp.read(&mut chunk) {
                 Ok(0) => bail!("Mac closed the HP control channel"),
                 Ok(n) => {
@@ -359,9 +380,18 @@ impl HpConnection {
                 Err(e) => return Err(e.into()),
             }
         }
-        let result = record::drain_records(&mut self.records, &mut self.pending)?;
-        for body in &result {
-            self.inspect_control(body)?;
+        let mut result = Vec::new();
+        for body in record::drain_records(&mut self.records, &mut self.pending)? {
+            let (messages, other) = self.file_decoder.feed(&body)?;
+            ensure!(
+                self.file_messages.len() + messages.len() <= 256,
+                "file event backlog exceeded limit"
+            );
+            self.file_messages.extend(messages);
+            if let Some(other) = other {
+                self.inspect_control(&other)?;
+                result.push(other);
+            }
         }
         if self.recovery.take_due(Instant::now()) {
             self.send_media_offer()?;

@@ -30,6 +30,17 @@ Apple omits the answer's tile-count field for a single full-picture stream.
 An absent field therefore defaults to one; an explicit zero remains invalid.
 Control input uses encrypted RFB key, pointer, and Latin-1 clipboard messages.
 
+Experimental `file_transfer` codecs implement Apple's length-delimited `0x22`
+file request, single-file metadata, data and end messages. `try_send_file_message`
+uses the same authenticated control connection; it never initiates another login.
+Bulk output yields at a bounded watermark before encryption. Control ciphertext
+is queued in wire order and partial nonblocking writes retain exact offsets.
+`poll_control` performs bounded reads, reassembles file messages, and preserves
+other control data for layout/media handling. Drain file replies using
+`take_file_messages`. Callers must impose transfer and partial-message deadlines,
+bind replies to the active transfer ID, validate completion, and isolate disk I/O.
+These codecs are offline-tested; patched macOS/HP interoperability is unverified.
+
 Apple's codec bank labels are misleading: bank 100 with AVC-labelled parameter
 text produces HEVC; bank 123 with HEVC-labelled text produces H.264. This
 inversion is documented by the upstream

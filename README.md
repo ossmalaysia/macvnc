@@ -1,4 +1,4 @@
-# MacVNC v0.1.9 — native Rust HP client
+# MacVNC v0.1.10 — native Rust HP client
 
 Developed by [AnchorSprint](https://anchorsprint.com).
 
@@ -33,6 +33,26 @@ software decoder uses slice threading for Apple's HEVC 4:4:4 stream.
 Download the latest **native Rust HP** package from [GitHub Releases](https://github.com/ossmalaysia/macvnc/releases/latest), extract the ZIP, and run `macvnc-app.exe`. Keep every DLL beside the executable. The package is portable and does not require Node, Rust, Electron, or an installer.
 
 Releases are unsigned, so Windows SmartScreen may require explicit approval. Verify `SHA256SUMS.txt` before launching a downloaded package.
+
+## In-app updates (Windows x64)
+
+MacVNC checks GitHub for newer stable releases at startup and once a day while
+open. Click **Updates** to check manually; when a release is available, the
+toolbar shows its version. Review **What's new**, then click **Download and
+restart**. Download progress is shown while the app stays open. After verifying
+the checksum and package, MacVNC closes, installs the complete portable package
+and restarts. Its current Mac session disconnects; reconnect explicitly afterward.
+
+Keep the app in a writable folder. Updates preserve saved connection profiles
+and unrelated files; bundled runtime files, notices and `source/` are replaced,
+so keep source edits elsewhere. If replacement or startup fails, the updater
+attempts to restore and restart the previous version. A file transfer must finish
+or be cancelled before starting an update. Downloads can be cancelled before
+installation begins. Development builds and other platforms require manual updates.
+
+Update packages require the `UPDATE.json` metadata now produced by
+`scripts/package-rust.ps1`, alongside the release ZIP and `SHA256SUMS.txt`.
+See [updater behavior and validation](docs/UPDATES.md).
 
 ## What it looks like
 
@@ -86,8 +106,38 @@ Drag the Windows title bar, app name, or empty header area to move the client.
 Double-click the app header to maximize or restore the window.
 The keyboard supports Ctrl-as-Command and Native profiles. Left/right modifiers
 are combined by the current GUI input API, so the legacy right-Ctrl passthrough
-is not yet equivalent. Clipboard transmission is supported; audio, file transfer
-and hardware video decode are not implemented.
+is not yet equivalent. Text clipboard transmission is supported. Experimental
+file transfer controls are available below; audio and hardware video decode are
+not implemented.
+
+## Experimental file copy
+
+While connected, click **Files**. To send a regular file, drop it into the Files
+window or enter its full local path, enter an absolute destination folder on the
+Mac, and confirm that replacing a file with the same name is acceptable. Click
+**Send file**. To receive a file, enter its absolute Mac path and a new full local
+destination filename, then click **Receive file**. The local destination folder
+must exist; existing local files are preserved.
+
+Transfers use Apple's native `0x22` file messages inside the existing authenticated
+Screen Sharing connection. No SSH, additional account or Mac companion is used.
+This path is experimental: normal authenticated interoperability with patched
+macOS and High Performance mode has **not** been live-validated. Offline tests
+exercise the wire codec, streaming and failure handling; they do not establish
+Mac compatibility. The client reports completion only after a matching native
+completion reply. Unsupported replies or missing confirmation stop the transfer.
+
+The first version handles one regular file at a time, smaller than 4 GiB. It
+does not implement folders, file clipboard synchronization, Finder destination
+discovery, resource forks or resumable copies. A dropped local file selects the
+upload source; it does not automatically write to the Mac. Downloads are staged
+locally until validated completion. **Cancel and disconnect** closes the session
+because the native cancel exchange is still unverified; partial remote files can
+remain after cancellation or failure. Check the destination before retrying.
+
+See the [protocol research](docs/FILE_TRANSFER_RESEARCH.md) and
+[implementation plan](docs/FILE_TRANSFER_PLAN.md) for provenance and remaining
+interoperability work.
 
 ## Roadmap
 

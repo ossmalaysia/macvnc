@@ -50,8 +50,31 @@ or independent security audit is claimed.
 - The reverse-engineered protocol can change with macOS updates. Authentication,
   playback, input and recovery need separate live validation; passing offline
   tests does not establish interoperability or security on every Mac.
+- Experimental file copying uses the existing successfully authenticated HP
+  session. It never uses the authentication-bypass framing present in some
+  public protocol research. Native file messages and reply buffers are bounded;
+  data moves through separate bounded queues rather than the input queue. Local
+  downloads use exclusive staging files and do not replace existing files.
+  Uploads require explicit consent to possible replacement on the Mac. No native
+  cancel, remote atomic replacement or partial-file cleanup guarantee has been
+  established: stopping an in-flight transfer closes the session, and a partial
+  remote file may remain. File transfer has not been live-validated on macOS.
 
 ## Diagnostics and dependencies
+
+The Windows updater checks public stable releases only from
+`ossmalaysia/macvnc`. It uses HTTPS with the OS trust roots, restricts redirects
+to GitHub release hosts and requires the release SHA-256 checksum, matching
+version/platform metadata and a Windows x64 executable. Archive sizes, paths
+and file inventories are bounded; traversal, device names, links and unexpected
+runtime entries are rejected. Installation uses a same-volume staging directory,
+waits for the old process to exit and keeps backups until the restarted UI
+acknowledges startup. No account credentials are sent to the update service.
+These releases are unsigned: the checksum detects corruption but does not add
+publisher authentication beyond HTTPS and trust in the GitHub release account.
+Install into a folder writable only by trusted local users. The updater does
+not elevate privileges. If rollback cannot complete, backups remain available
+for recovery; the updater reports the failure instead of discarding them.
 
 There is no automatic upload of diagnostics. Opt-in `MACVNC_DIAGNOSTICS_PATH`
 writes local aggregate timing and decoder counters; do not attach saved profiles,

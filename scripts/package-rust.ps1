@@ -17,6 +17,11 @@ Copy-Item -LiteralPath "$extracted/LICENSE.txt" -Destination "$package/FFMPEG-LI
 Copy-Item -LiteralPath "$repo/LICENSE" -Destination "$package/LICENSE.txt"
 Copy-Item -LiteralPath "$repo/rust/LICENSE-AGPL-3.0.txt" -Destination "$package/LICENSE-AGPL-3.0.txt"
 Copy-Item -LiteralPath "$repo/docs/THIRD_PARTY.md" -Destination "$package/THIRD_PARTY.md"
+$appManifest = Get-Content -LiteralPath "$repo/rust/crates/macvnc-app/Cargo.toml" -Raw
+$appVersion = [regex]::Match($appManifest, '(?m)^version\s*=\s*"([^"]+)"\s*$').Groups[1].Value
+if ($appVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid native app version for update metadata' }
+$runtimeFiles = @(Get-ChildItem -LiteralPath $package -Filter '*.dll' -File | Select-Object -ExpandProperty Name)
+@{ schema=1; version=$appVersion; target='windows-x64'; runtime=$runtimeFiles } | ConvertTo-Json | Set-Content -Encoding ascii "$package/UPDATE.json"
 
 # Bundle the working-tree source: the rewritten application may not yet exist
 # in any public Git revision. Deliberately enumerate source roots, never copy
@@ -28,8 +33,9 @@ foreach ($file in @('Cargo.toml','Cargo.lock','rust-toolchain.toml','LICENSE','R
 }
 Copy-Item -LiteralPath "$repo/rust/LICENSE-AGPL-3.0.txt" -Destination "$source/rust"
 Copy-Item -LiteralPath "$repo/rust/AGENTS.md" -Destination "$source/rust"
-Copy-Item -LiteralPath "$repo/docs/THIRD_PARTY.md" -Destination "$source/docs"
-Copy-Item -LiteralPath "$repo/docs/CONTRACTS.md" -Destination "$source/docs"
+foreach ($doc in @('THIRD_PARTY.md','CONTRACTS.md','UPDATES.md','FILE_TRANSFER_RESEARCH.md','FILE_TRANSFER_PLAN.md','FILE_TRANSFER_VALIDATION.md')) {
+    Copy-Item -LiteralPath (Join-Path "$repo/docs" $doc) -Destination "$source/docs"
+}
 foreach ($crate in @('hp-protocol','hp-media','macvnc-app')) {
     $crateSource = Join-Path $repo "rust/crates/$crate"
     $crateDestination = Join-Path $source "rust/crates/$crate"

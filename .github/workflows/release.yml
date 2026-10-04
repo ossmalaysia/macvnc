@@ -75,6 +75,10 @@ jobs:
             Experimental native Rust HP client for Windows x64.
             Developed by AnchorSprint — https://anchorsprint.com
             Extract the entire archive and run macvnc-app.exe beside its DLLs.
+
+            In-app updates: check stable releases, download with progress, verify the package, close, update and restart. Failed replacement or startup attempts rollback. Older versions without the updater need a manual download first.
+            Experimental file copy: Files supports sending and receiving individual regular files over the authenticated Screen Sharing connection. Dropping a local file selects the upload source. Normal authenticated interoperability with a live Mac remains unverified; Finder/Explorer file clipboard and folders are not implemented.
+
             Unsigned build; native FFmpeg software HEVC decoding.
             Review the included license and source materials before use.
             Commercial/customization enquiries: oss@anchorsprint.com.

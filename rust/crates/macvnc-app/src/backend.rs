@@ -46,6 +46,7 @@ pub struct Backend {
     pub commands: CommandSender,
     pub events: Receiver<Event>,
     pub latest: Arc<Mutex<Option<RgbaFrame>>>,
+    pub transfers: crate::transfer::Client,
 }
 pub struct CommandSender {
     sender: SyncSender<Command>,
@@ -126,12 +127,25 @@ pub fn start(repaint: Arc<dyn Fn() + Send + Sync>) -> Backend {
     let (tx, events) = mpsc::channel();
     let latest = Arc::new(Mutex::new(None));
     let output = latest.clone();
+    let transfers = crate::transfer::Client::default();
+    let transfer_worker = transfers.clone();
     std::thread::spawn(move || {
         while let Ok(command) = rx.recv() {
             if let Command::Connect(opts) = command {
                 let _ = tx.send(Event::Status("Negotiating encrypted HP session…".into()));
                 repaint();
-                let result = run_session(opts, &rx, &tx, &output, &repaint, &cancelled, None);
+                let result = run_session(
+                    opts,
+                    &rx,
+                    &tx,
+                    &output,
+                    &repaint,
+                    &cancelled,
+                    SessionContext {
+                        probe: None,
+                        transfers: &transfer_worker,
+                    },
+                );
                 *output.lock().unwrap() = None;
                 // No queued input or connection request survives a session boundary.
                 while rx.try_recv().is_ok() {}
@@ -148,6 +162,7 @@ pub fn start(repaint: Arc<dyn Fn() + Send + Sync>) -> Backend {
         commands,
         events,
         latest,
+        transfers,
     }
 }
 
@@ -156,6 +171,10 @@ struct ProbeOptions {
     duration: Duration,
     simulate_loss: bool,
     wake_display: bool,
+}
+struct SessionContext<'a> {
+    probe: Option<ProbeOptions>,
+    transfers: &'a crate::transfer::Client,
 }
 
 pub fn probe(
@@ -173,11 +192,14 @@ pub fn probe(
         &Arc::new(Mutex::new(None)),
         &(Arc::new(|| {}) as Arc<dyn Fn() + Send + Sync>),
         &AtomicBool::new(false),
-        Some(ProbeOptions {
-            duration: Duration::from_secs(seconds.clamp(5, 120)),
-            simulate_loss,
-            wake_display,
-        }),
+        SessionContext {
+            probe: Some(ProbeOptions {
+                duration: Duration::from_secs(seconds.clamp(5, 120)),
+                simulate_loss,
+                wake_display,
+            }),
+            transfers: &crate::transfer::Client::default(),
+        },
     )
 }
 
@@ -188,8 +210,9 @@ fn run_session(
     latest: &Arc<Mutex<Option<RgbaFrame>>>,
     repaint: &Arc<dyn Fn() + Send + Sync>,
     cancelled: &AtomicBool,
-    probe: Option<ProbeOptions>,
+    context: SessionContext<'_>,
 ) -> Result<ProbeReport> {
+    let probe = context.probe;
     let limit = probe.map(|p| p.duration);
     if cancelled.load(Ordering::Acquire) {
         return Ok(ProbeReport::default());
@@ -211,6 +234,7 @@ fn run_session(
         return Ok(ProbeReport::default());
     }
     let mut width = connection.width as u32;
+    let mut transfers = crate::transfer::Session::new(context.transfers.clone());
     let mut height = connection.height as u32;
     let mut tiles = connection
         .stream_config
@@ -268,6 +292,7 @@ fn run_session(
             }
         }
         connection.poll_control()?;
+        transfers.pump(&mut connection)?;
         report.layout_events = connection.layout_events;
         report.media_reoffers = connection.media_reoffers;
         let next_width = u32::from(connection.width);

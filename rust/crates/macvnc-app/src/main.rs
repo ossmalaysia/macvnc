@@ -2,6 +2,9 @@
 mod backend;
 mod input;
 mod profile;
+mod transfer;
+mod transfer_ui;
+mod updater;
 
 use backend::{Backend, Command, ConnectOptions, Event};
 use eframe::egui::{self, Color32, Key, TextureHandle};
@@ -44,6 +47,8 @@ struct App {
     window_drag_anchor: [Option<egui::Pos2>; 2],
     clipboard: ClipboardSync,
     pending_paste: VecDeque<Command>,
+    files: transfer_ui::Files,
+    updates: updater::Updater,
 }
 impl App {
     fn new(
@@ -51,6 +56,7 @@ impl App {
         smoke: bool,
         smoke_duration: Duration,
         no_autoconnect: bool,
+        finish_update: Option<std::path::PathBuf>,
     ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let mut style = (*cc.egui_ctx.style()).clone();
@@ -85,7 +91,7 @@ impl App {
         };
         let auto_pending = profile.auto_connect && !smoke && !no_autoconnect;
         let port = profile.port.to_string();
-        Self {
+        let mut app = Self {
             backend: backend::start(Arc::new(move || ctx.request_repaint())),
             profile,
             remember,
@@ -112,13 +118,35 @@ impl App {
             window_drag_anchor: [None; 2],
             clipboard: ClipboardSync::default(),
             pending_paste: VecDeque::new(),
+            files: {
+                let mut files = transfer_ui::Files::default();
+                files.open = smoke;
+                files
+            },
+            updates: updater::Updater::new(cc.egui_ctx.clone(), smoke),
+        };
+        // Acknowledge only after eframe has created the native UI context.
+        if let Some(stage) = finish_update {
+            match updater::install::finish_restart(&stage) {
+                Ok(status) => app.status = status,
+                Err(error) => {
+                    app.status = format!("Update startup could not be confirmed: {error:#}");
+                    app.auto_pending = false;
+                }
+            }
         }
+        app
     }
     fn send(&self, command: Command) {
         let _ = self.backend.commands.send(command);
     }
     fn connect(&mut self) {
-        if self.connecting || self.connected || self.cancelling || self.smoke {
+        if self.connecting
+            || self.connected
+            || self.cancelling
+            || self.smoke
+            || self.updates.should_exit()
+        {
             return;
         }
         let port = match self.port.parse::<u16>() {
@@ -257,7 +285,11 @@ impl App {
         // egui uses Tab for local focus traversal and can clear the canvas focus
         // before delivering the event. Keep capturing keyboard input while the
         // pointer is over the remote view so Tab reaches the Mac as 0xff09.
-        if !ctx.input(|i| i.focused) || (!response.has_focus() && !response.hovered()) {
+        if self.files.open
+            || self.updates.open
+            || !ctx.input(|i| i.focused)
+            || (!response.has_focus() && !response.hovered())
+        {
             self.release_input();
             return;
         }
@@ -547,6 +579,15 @@ fn tap(letter: u8) -> Vec<Command> {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.updates.should_exit() {
+            self.auto_pending = false;
+            self.pending_paste.clear();
+            self.release_input();
+            self.backend.transfers.cancel();
+            self.send(Command::Disconnect);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         if self.auto_pending {
             self.auto_pending = false;
             self.connect();
@@ -574,6 +615,7 @@ impl eframe::App for App {
                     self.status = "Connected · HP / HEVC".into();
                 }
                 Event::Disconnected(reason) => {
+                    self.files.session_ended();
                     self.network_rtt = None;
                     self.release_input();
                     self.connected = false;
@@ -647,6 +689,16 @@ impl eframe::App for App {
                 );
                 ui.separator();
                 ui.label(format!("{} fps", self.presented.len()));
+                if ui.button(self.updates.button_label()).clicked() {
+                    self.release_input();
+                    self.pending_paste.clear();
+                    self.updates.open = !self.updates.open;
+                }
+                if ui.add_enabled(self.connected && !self.cancelling, egui::Button::new("Files")).clicked() {
+                    self.release_input();
+                    self.pending_paste.clear();
+                    self.files.open = !self.files.open;
+                }
                 ui.label(rtt_label(self.network_rtt, self.rtt_changed.elapsed()))
                 .on_hover_text("Network latency: the OS-estimated TCP round-trip time, read every second. It only updates when the Mac acknowledges input you send, so it is marked stale while you are idle; move the mouse to refresh it. Excludes video decoding and display delay. — means unavailable.");
                 if (self.connected || self.connecting)
@@ -701,6 +753,21 @@ impl eframe::App for App {
                 ui.hyperlink_to("Developed by AnchorSprint", "https://anchorsprint.com");
             });
         });
+        if self.files.show(
+            ctx,
+            &self.backend.transfers,
+            self.connected && !self.cancelling && !self.updates.install_busy(),
+        ) {
+            self.release_input();
+            self.backend.transfers.cancel();
+            self.send(Command::Disconnect);
+            self.cancelling = true;
+        }
+        self.updates.show(
+            ctx,
+            self.backend.transfers.snapshot().busy,
+            self.connected || self.connecting,
+        );
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(texture) = &self.texture {
                 let avail = ui.available_size();
@@ -871,6 +938,13 @@ impl eframe::App for App {
 }
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(stage) = option_value(&args, "--apply-update") {
+        if let Err(error) = updater::install::run_helper(std::path::Path::new(stage)) {
+            updater::install::show_error(&format!("Update could not finish: {error:#}\nIf files were already replaced, their backups remain in the update folder. No credentials were changed."));
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if args.iter().any(|arg| arg == "--live-smoke") {
         let result = live_smoke(&args);
         if let Err(error) = result {
@@ -885,6 +959,7 @@ fn main() -> eframe::Result {
         .unwrap_or(3)
         .clamp(1, 3600);
     let no_autoconnect = args.iter().any(|arg| arg == "--no-autoconnect");
+    let finish_update = option_value(&args, "--finish-update").map(std::path::PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_decorations(true)
@@ -907,6 +982,7 @@ fn main() -> eframe::Result {
                 smoke,
                 Duration::from_secs(smoke_seconds),
                 no_autoconnect,
+                finish_update,
             )))
         }),
     )

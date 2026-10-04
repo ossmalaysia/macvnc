@@ -82,9 +82,20 @@ unsafe extern "C" fn count_reference_error(
             } else {
                 &slot.decode_errors
             };
-            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_add(1))
-            });
+            // Equivalent saturating update on both older Rust and Rust 1.99,
+            // where fetch_update is deprecated in favor of try_update.
+            let mut previous = counter.load(Ordering::Relaxed);
+            loop {
+                match counter.compare_exchange_weak(
+                    previous,
+                    previous.saturating_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => previous = current,
+                }
+            }
             break;
         }
     }
