@@ -23,9 +23,11 @@ Synthetic UI smoke tests show a sample update without making network requests.
   corrupted bytes; these releases are not signed independently of GitHub/TLS.
 
 Older release artifacts without the identity file cannot be installed through
-this updater. Version 0.1.10 introduces the updater and package metadata; users
-of earlier versions must download and extract it manually. Subsequent compatible
-stable releases can be installed through the Updates window.
+this updater. Version 0.1.11 is the first portable release with the updater and
+package metadata; users of earlier versions must download and extract it manually.
+The 0.1.10 tag contains the implementation, but its publication was blocked by
+the repository's release-action policy. Subsequent compatible stable releases
+can be installed through the Updates window.
 
 ## Download and restart lifecycle
 
