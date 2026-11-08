@@ -53,6 +53,9 @@ pub struct Profile {
     pub auto_connect: bool,
     #[serde(default)]
     pub enc: String,
+    /// Mac display follows the MacVNC window size (dynamic resolution).
+    #[serde(default = "default_true")]
+    pub dynamic_resolution: bool,
     #[serde(skip)]
     pub password: String,
     #[serde(skip)]
@@ -60,6 +63,9 @@ pub struct Profile {
 }
 fn default_port() -> u16 {
     5900
+}
+fn default_true() -> bool {
+    true
 }
 fn default_keyboard() -> String {
     "ctrl-as-cmd".into()
@@ -73,6 +79,7 @@ impl Default for Profile {
             profile: "ctrl-as-cmd".into(),
             auto_connect: false,
             enc: String::new(),
+            dynamic_resolution: true,
             password: String::new(),
             legacy_password: false,
         }
@@ -146,6 +153,7 @@ fn save_to(p: &Profile, path: &Path) -> Result<(), String> {
         profile: p.profile.clone(),
         auto_connect: p.auto_connect && !p.password.is_empty(),
         enc: String::new(),
+        dynamic_resolution: p.dynamic_resolution,
         password: String::new(),
         legacy_password: false,
     };

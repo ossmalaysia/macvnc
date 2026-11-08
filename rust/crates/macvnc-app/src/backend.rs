@@ -32,15 +32,32 @@ impl Drop for ConnectOptions {
 pub enum Command {
     Connect(ConnectOptions),
     Disconnect,
-    Pointer { x: u16, y: u16, buttons: u8 },
-    Key { keysym: u32, down: bool },
+    Pointer {
+        x: u16,
+        y: u16,
+        buttons: u8,
+    },
+    Key {
+        keysym: u32,
+        down: bool,
+    },
     Clipboard(String),
+    /// Resize the Mac's virtual display to this many pixels (dynamic resolution).
+    Resize {
+        width: u16,
+        height: u16,
+    },
 }
 pub enum Event {
     Status(String),
     NetworkRtt(Option<Duration>),
-    Connected { width: u32, height: u32 },
+    Connected {
+        width: u32,
+        height: u32,
+    },
     Disconnected(String),
+    /// Text copied on the Mac, for the Windows clipboard.
+    RemoteClipboard(String),
 }
 pub struct Backend {
     pub commands: CommandSender,
@@ -286,12 +303,22 @@ fn run_session(
                 Ok(Command::Pointer { x, y, buttons }) => connection.send_pointer(buttons, x, y)?,
                 Ok(Command::Key { keysym, down }) => connection.send_key(down, keysym)?,
                 Ok(Command::Clipboard(text)) => connection.send_clipboard(&text)?,
+                Ok(Command::Resize { width, height }) => {
+                    connection.request_display_size(width, height)?;
+                    let _ = events.send(Event::Status(format!(
+                        "Resizing Mac display to {width} × {height}…"
+                    )));
+                }
                 Ok(Command::Connect(_)) => (),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(report),
             }
         }
         connection.poll_control()?;
+        if let Some(text) = connection.take_remote_clipboard() {
+            let _ = events.send(Event::RemoteClipboard(text));
+            repaint();
+        }
         transfers.pump(&mut connection)?;
         report.layout_events = connection.layout_events;
         report.media_reoffers = connection.media_reoffers;

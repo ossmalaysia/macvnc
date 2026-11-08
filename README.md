@@ -1,6 +1,6 @@
-# MacVNC v0.1.12 — native Rust HP client
+# MacVNC v0.1.13 — native Rust HP client
 
-Developed by [AnchorSprint](https://anchorsprint.com).
+Developed by [Anchor Sprint](https://anchorsprint.com).
 
 Commercial and enterprise customization enquiries:
 [oss@anchorsprint.com](mailto:oss@anchorsprint.com).
@@ -116,7 +116,16 @@ Double-click the app header to maximize or restore the window.
 The keyboard supports Ctrl-as-Command and Native profiles. In Ctrl-as-Command
 (the default), left Ctrl sends Command and right Ctrl or the Windows key sends
 the Mac's Control key, so Control-C in Terminal is right Ctrl+C. In Native, Ctrl
-sends Control and the Windows key sends Command. Text clipboard transmission is supported. Experimental
+sends Control and the Windows key sends Command.
+
+The Mac display follows the MacVNC window by default (**Resolution → Fit window**): resize or
+maximise the window and, after a moment, the Mac re-renders at the new size (up to 3840 × 2160)
+without reconnecting. Choose **Fixed 1920 × 1080** to keep the previous fixed canvas.
+
+Text clipboard works both ways. Copy on the Mac and the text lands on the
+Windows clipboard (the status line says "Copied from Mac"); pasting it back
+into the session uses the Mac's own pasteboard. Windows → Mac paste types the
+text in. Images and files are not synchronised. Experimental
 file transfer controls are available below; audio and hardware video decode are
 not implemented.
 

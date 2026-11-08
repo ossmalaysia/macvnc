@@ -5,6 +5,8 @@ MacVNC is a native Rust Windows client for Apple's macOS Screen Sharing
 `docs/CONTRACTS.md` before changing protocol behavior. HP mode is experimental;
 preserve its compatibility and recovery checks.
 
+Read `docs/LEARNINGS.md` first: past mistakes and the rules that came out of them.
+
 ## Architecture
 
 - `rust/crates/hp-protocol/`: transport, authentication, encrypted records and metadata.
@@ -25,3 +27,13 @@ preserve its compatibility and recovery checks.
 - Package with `powershell -File scripts/build-rust.ps1 -Package`.
 - Use synthetic fixtures by default. Live tests require authorization.
 - Do not commit generated packages, temporary validation artifacts or credentials.
+
+## Learnings loop (required)
+
+`docs/LEARNINGS.md` is a compact, topic-grouped list of rules. When a tool call, build, CI run or
+live test fails for a reason that could bite again, add one short rule bullet to the matching
+section (`rule — why`), or sharpen an existing bullet; no dated stories or filler (history stays in
+git). Before finishing a run that changed code, check nothing learned is missing. Claude Code
+enforces this with hooks in `.claude/settings.json` (a reminder after failed tool calls and CI log
+reads, and a Stop gate); other agents must do it themselves. If a lesson changes how agents must
+work, update this file too.

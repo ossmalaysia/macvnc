@@ -2,6 +2,7 @@
 mod backend;
 mod input;
 mod profile;
+mod resize;
 mod transfer;
 mod transfer_ui;
 mod updater;
@@ -47,6 +48,9 @@ struct App {
     window_drag_anchor: [Option<egui::Pos2>; 2],
     clipboard: ClipboardSync,
     pending_paste: VecDeque<Command>,
+    /// Physical pixels available to the remote view, measured every frame.
+    view_px: [u32; 2],
+    resize: resize::Tracker,
     files: transfer_ui::Files,
     updates: updater::Updater,
 }
@@ -118,6 +122,8 @@ impl App {
             window_drag_anchor: [None; 2],
             clipboard: ClipboardSync::default(),
             pending_paste: VecDeque::new(),
+            view_px: [0, 0],
+            resize: resize::Tracker::default(),
             files: {
                 let mut files = transfer_ui::Files::default();
                 files.open = smoke;
@@ -190,13 +196,21 @@ impl App {
         self.size = [0, 0];
         self.connecting = true;
         self.status = "Connecting with High Performance…".into();
+        // Dynamic resolution starts the Mac display at the window's size;
+        // otherwise keep the fixed 1080p canvas.
+        let [width, height] = if self.profile.dynamic_resolution && self.view_px[0] > 0 {
+            self.resize.reset(self.view_px);
+            resize::target(self.view_px)
+        } else {
+            [1920, 1080]
+        };
         self.send(Command::Connect(ConnectOptions {
             host: self.profile.host.trim().into(),
             port,
             username: self.profile.username.clone(),
             password: self.profile.password.clone(),
-            width: 1920,
-            height: 1080,
+            width,
+            height,
             fps: 60,
         }));
         // Remember also preserves the masked form value for explicit reconnects.
@@ -506,13 +520,19 @@ const _: () = assert!(PASTE_COMMANDS_PER_FRAME < backend::COMMAND_QUEUE_CAPACITY
 #[derive(Default)]
 struct ClipboardSync {
     remote_owns: bool,
+    /// The last text the Mac put on the Windows clipboard. Pasting it back
+    /// into the session uses the Mac's own pasteboard instead of re-typing it.
+    remote_text: Option<String>,
 }
 impl ClipboardSync {
     /// True when this event will be typed out, which requires the caller to
     /// release held modifiers first: typing while Command is latched on the Mac
     /// fires shortcuts (Command-S, Command-W, Command-Q) instead of entering text.
     fn will_type(&self, event: &egui::Event) -> bool {
-        matches!(event, egui::Event::Paste(_)) && !self.remote_owns
+        matches!(event, egui::Event::Paste(text) if !self.remote_owns && !self.is_mac_text(text))
+    }
+    fn is_mac_text(&self, text: &str) -> bool {
+        self.remote_text.as_deref() == Some(text)
     }
     fn commands(&mut self, event: egui::Event) -> Vec<Command> {
         match event {
@@ -527,7 +547,7 @@ impl ClipboardSync {
             egui::Event::Paste(text) => {
                 // Consume the flag unconditionally so a Mac-side copy latches it
                 // for exactly one paste.
-                if std::mem::take(&mut self.remote_owns) {
+                if std::mem::take(&mut self.remote_owns) || self.is_mac_text(&text) {
                     tap(b'v')
                 } else {
                     typed(&text)
@@ -622,10 +642,27 @@ impl eframe::App for App {
         // Runs before the UI so a paste keeps draining even if the pointer leaves
         // the remote view part-way through.
         self.drain_pending_paste(ctx);
+        // Dynamic resolution: the Mac display follows the window once its
+        // size settles. The resulting layout change rebuilds the video stream.
+        if self.connected && !self.cancelling && self.profile.dynamic_resolution {
+            if let Some([width, height]) = self.resize.poll(self.view_px, Instant::now()) {
+                self.send(Command::Resize { width, height });
+            }
+            if self.resize.waiting() {
+                ctx.request_repaint_after(resize::DEBOUNCE / 2);
+            }
+        }
         let mut latest = None;
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
                 Event::Status(s) => self.status = s,
+                Event::RemoteClipboard(text) => {
+                    if self.connected {
+                        ctx.copy_text(text.clone());
+                        self.clipboard.remote_text = Some(text);
+                        self.status = "Copied from Mac · paste anywhere in Windows".into();
+                    }
+                }
                 Event::NetworkRtt(rtt) => {
                     if rtt != self.network_rtt {
                         self.rtt_changed = Instant::now();
@@ -782,7 +819,7 @@ impl eframe::App for App {
                     ui.label(format!("{} × {}", self.size[0], self.size[1]));
                 }
                 ui.separator();
-                ui.hyperlink_to("Developed by AnchorSprint", "https://anchorsprint.com");
+                ui.hyperlink_to("Developed by Anchor Sprint", "https://anchorsprint.com");
             });
         });
         if self.files.show(
@@ -801,6 +838,8 @@ impl eframe::App for App {
             self.connected || self.connecting,
         );
         egui::CentralPanel::default().show(ctx, |ui| {
+            let px = ui.available_size() * ctx.pixels_per_point();
+            self.view_px = [px.x.max(0.0) as u32, px.y.max(0.0) as u32];
             if let Some(texture) = &self.texture {
                 let avail = ui.available_size();
                 let native = egui::vec2(self.size[0] as f32, self.size[1] as f32);
@@ -902,6 +941,35 @@ impl eframe::App for App {
                                 ui.label(
                                     egui::RichText::new(
                                         "Use Ctrl → Control for Control-based Mac shortcuts; Ctrl → Command maps Windows Ctrl to ⌘.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Resolution");
+                                    egui::ComboBox::from_id_salt("resolution")
+                                        .selected_text(if self.profile.dynamic_resolution {
+                                            "Fit window"
+                                        } else {
+                                            "Fixed 1920 × 1080"
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.profile.dynamic_resolution,
+                                                true,
+                                                "Fit window",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.profile.dynamic_resolution,
+                                                false,
+                                                "Fixed 1920 × 1080",
+                                            );
+                                        });
+                                });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Fit window resizes the Mac display to match this window, up to 3840 × 2160.",
                                     )
                                     .small()
                                     .weak(),
@@ -1304,6 +1372,25 @@ mod tests {
         assert_eq!(clipboard_letter(&egui::Event::Copy), b'c');
         assert_eq!(clipboard_letter(&egui::Event::Cut), b'x');
         assert_eq!(clipboard_letter(&egui::Event::Paste("x".into())), b'v');
+    }
+    #[test]
+    fn pasting_text_copied_on_the_mac_uses_command_v_not_typing() {
+        let mut sync = ClipboardSync {
+            remote_text: Some("from mac".into()),
+            ..ClipboardSync::default()
+        };
+        let event = egui::Event::Paste("from mac".into());
+        assert!(!sync.will_type(&event), "no modifier release needed");
+        assert_eq!(
+            describe(&sync.commands(event)),
+            ["key:118:true", "key:118:false"]
+        );
+        // A different Windows clipboard is still typed in, every time.
+        let local = egui::Event::Paste("from windows".into());
+        assert!(sync.will_type(&local));
+        assert!(describe(&sync.commands(local)).contains(&"clipboard:from windows".to_string()));
+        // And the Mac text keeps mapping to ⌘V on later pastes.
+        assert!(!sync.will_type(&egui::Event::Paste("from mac".into())));
     }
     #[test]
     fn will_type_reports_when_modifiers_must_be_released_first() {

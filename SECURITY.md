@@ -1,7 +1,7 @@
 # Security policy
 
 MacVNC is an experimental native Rust Windows client for Apple's High Performance
-Screen Sharing. Developed by [AnchorSprint](https://anchorsprint.com). Security
+Screen Sharing. Developed by [Anchor Sprint](https://anchorsprint.com). Security
 fixes are accepted for the current development branch; older experimental builds
 do not have a separate maintenance commitment.
 

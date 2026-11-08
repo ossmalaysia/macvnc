@@ -89,7 +89,7 @@ $sourceManifest | Set-Content -Encoding utf8 "$ffmpegSources/SOURCES.txt"
 Copy-Item -LiteralPath "$ffmpegSources/GPL-3.0.txt" -Destination "$package/FFMPEG-GPL-3.0.txt"
 @"
 macvnc Rust native HP client
-Developed by AnchorSprint: https://anchorsprint.com
+Developed by Anchor Sprint: https://anchorsprint.com
 Commercial/customization enquiries: oss@anchorsprint.com
 Run macvnc-app.exe. The DLLs must stay beside the executable.
 

@@ -29,6 +29,11 @@ this never repeats the login handshake.
 Apple omits the answer's tile-count field for a single full-picture stream.
 An absent field therefore defaults to one; an explicit zero remains invalid.
 Control input uses encrypted RFB key, pointer, and Latin-1 clipboard messages.
+Mac → viewer text clipboard uses Apple's rich pasteboard messages
+(`src/pasteboard.rs`): `0x15` enables change notices, a `0x14` status 2 notice
+triggers an 8-byte `0x0b` fetch, and the `0x1f` reply (zlib, sync-flushed, may
+span records) is reassembled and decoded with size limits. Only text flavours
+are used; malformed or oversized pasteboards are ignored.
 
 Experimental `file_transfer` codecs implement Apple's length-delimited `0x22`
 file request, single-file metadata, data and end messages. `try_send_file_message`

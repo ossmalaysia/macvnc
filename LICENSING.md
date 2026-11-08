@@ -1,6 +1,6 @@
 # Licensing and commercial enquiries
 
-Developed by [AnchorSprint](https://anchorsprint.com).
+Developed by [Anchor Sprint](https://anchorsprint.com).
 Contact [oss@anchorsprint.com](mailto:oss@anchorsprint.com) for commercial
 licensing enquiries, enterprise customization and support.
 
@@ -10,12 +10,12 @@ The original MIT notice remains in `LICENSE`. The native combined application
 and HP-derived components carry AGPL-3.0-or-later terms; dependencies retain
 their respective licenses. See [NOTICE.md](NOTICE.md) and
 [provenance](docs/THIRD_PARTY.md). Existing licenses permit commercial use when
-their conditions are followed. Contacting AnchorSprint or purchasing a separate
+their conditions are followed. Contacting Anchor Sprint or purchasing a separate
 license is not a condition added to those existing rights.
 
 ## Proposed future model — not an operative license
 
-AnchorSprint's intended model is a **source-available community license plus
+Anchor Sprint's intended model is a **source-available community license plus
 a separate commercial agreement**. It is not an OSI open-source license.
 
 | Intended use | Proposed terms after rights clearance |

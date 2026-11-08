@@ -84,7 +84,7 @@ jobs:
           draft: false
           body: |
             Experimental native Rust HP client for Windows x64.
-            Developed by AnchorSprint — https://anchorsprint.com
+            Developed by Anchor Sprint — https://anchorsprint.com
 
             Install: download MacVNC-Setup-win-x64.exe and run it. It installs for your Windows user only (no administrator prompt) with Start menu and desktop shortcuts and an uninstaller in Settings → Apps.
             Portable: extract macvnc-rust-windows-x64.zip and run macvnc-app.exe beside its DLLs.
