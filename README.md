@@ -1,6 +1,6 @@
 # MacVNC v0.1.13 — native Rust HP client
 
-Developed by [AnchorSprint](https://anchorsprint.com).
+Developed by [Anchor Sprint](https://anchorsprint.com).
 
 Commercial and enterprise customization enquiries:
 [oss@anchorsprint.com](mailto:oss@anchorsprint.com).

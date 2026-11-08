@@ -795,7 +795,7 @@ impl eframe::App for App {
                     ui.label(format!("{} × {}", self.size[0], self.size[1]));
                 }
                 ui.separator();
-                ui.hyperlink_to("Developed by AnchorSprint", "https://anchorsprint.com");
+                ui.hyperlink_to("Developed by Anchor Sprint", "https://anchorsprint.com");
             });
         });
         if self.files.show(

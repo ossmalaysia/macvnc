@@ -39,7 +39,7 @@ ManifestDPIAware true
 
 !define APP "MacVNC"
 !define EXE "macvnc-app.exe"
-!define PUBLISHER "AnchorSprint"
+!define PUBLISHER "Anchor Sprint"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP}"
 
 Name "${APP} ${VERSION}"

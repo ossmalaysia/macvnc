@@ -5,7 +5,7 @@ fn main() {
         winresource::WindowsResource::new()
             .set_icon("assets/macvnc.ico")
             .set("ProductName", "MacVNC")
-            .set("CompanyName", "AnchorSprint")
+            .set("CompanyName", "Anchor Sprint")
             .set("FileDescription", "MacVNC High Performance Screen Sharing")
             .set("InternalName", "MacVNC")
             .set("OriginalFilename", "macvnc-app.exe")

@@ -10,3 +10,6 @@ MacVNC is the native Rust HP client. Start with [README.md](README.md),
 - Preserve third-party notices and consult [LICENSING.md](LICENSING.md).
 - Never commit credentials, private captures, generated packages or validation output.
 - Use synthetic fixtures by default; live connections require authorization.
+- Record re-usable lessons in [docs/LEARNINGS.md](docs/LEARNINGS.md). Hooks in `.claude/settings.json`
+  remind after failed tool calls and CI log reads, and a Stop hook blocks finishing a code-changing
+  turn until the file is updated (Node.js required).
