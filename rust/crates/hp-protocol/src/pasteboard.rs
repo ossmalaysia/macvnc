@@ -208,12 +208,14 @@ fn text_from_items(items: &[Item]) -> Result<Option<String>> {
                 let big_endian = uti.contains("external");
                 let units: Vec<u16> = item
                     .data
-                    .chunks_exact(2)
-                    .map(|c| {
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&pair| {
                         if big_endian {
-                            u16::from_be_bytes([c[0], c[1]])
+                            u16::from_be_bytes(pair)
                         } else {
-                            u16::from_le_bytes([c[0], c[1]])
+                            u16::from_le_bytes(pair)
                         }
                     })
                     .collect();
