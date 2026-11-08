@@ -1,0 +1,78 @@
+name: Release (approved)
+
+# One-click release, same model as EzyChat Lite: run this workflow on main with
+# the version already merged in rust/crates/macvnc-app/Cargo.toml, typed twice.
+# It checks main, creates the annotated tag vX.Y.Z through the API and starts
+# release.yml on that tag. A tag created with GITHUB_TOKEN does not trigger
+# `on: push: tags`, so release.yml is started here with workflow_dispatch.
+# Publishing still waits for approval in the `github-release` environment.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version merged on main, x.y.z (e.g. 0.1.12)
+        required: true
+        type: string
+      confirm:
+        description: Type the version again to confirm
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-approve
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag v${{ inputs.version }} and start the release
+    # Only main is released; a dispatch on any other branch or tag stops here.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the tag
+      actions: write # start release.yml
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      # Inputs reach shells only through env, never ${{ }} inside run.
+      VERSION: ${{ inputs.version }}
+      CONFIRM: ${{ inputs.confirm }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Check version, main and tag
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be x.y.z, got: $VERSION"; exit 1; }
+          [ "$CONFIRM" = "$VERSION" ] || { echo "::error::confirm must repeat the version exactly"; exit 1; }
+          main="$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)"
+          [ "$main" = "$SHA" ] || { echo "::error::main moved to $main after this run started on $SHA: start the release again"; exit 1; }
+          manifest="$(gh api "repos/$REPO/contents/rust/crates/macvnc-app/Cargo.toml?ref=$SHA" --jq .content | base64 -d)"
+          app="$(printf '%s\n' "$manifest" | sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1)"
+          [ "$app" = "$VERSION" ] || { echo "::error::macvnc-app on main is $app, not $VERSION: merge the version bump first"; exit 1; }
+          if gh api "repos/$REPO/git/ref/tags/v$VERSION" > /dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists"; exit 1
+          fi
+          if gh release view "v$VERSION" --repo "$REPO" > /dev/null 2>&1; then
+            echo "::error::a release v$VERSION already exists"; exit 1
+          fi
+      - name: Create the annotated tag
+        run: |
+          set -euo pipefail
+          tag_sha="$(gh api "repos/$REPO/git/tags" -f tag="v$VERSION" -f message="MacVNC v$VERSION" \
+            -f object="$SHA" -f type=commit --jq .sha)"
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$tag_sha" > /dev/null
+          target="$(gh api "repos/$REPO/git/tags/$tag_sha" --jq .object.sha)"
+          [ "$target" = "$SHA" ] || { echo "::error::tag v$VERSION points at $target, not $SHA"; exit 1; }
+          echo "Tagged v$VERSION → $SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Start the release build
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --repo "$REPO" --ref "v$VERSION"
+          {
+            echo "Started release.yml on v$VERSION: Windows build, tests, installer and ZIP."
+            echo "Approve the github-release environment in that run to publish it as Latest."
+          } >> "$GITHUB_STEP_SUMMARY"
