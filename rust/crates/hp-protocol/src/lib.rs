@@ -5,6 +5,7 @@ pub mod file_transfer;
 pub mod metadata;
 mod network_stats;
 mod offer;
+pub mod pasteboard;
 pub mod record;
 use aes::{
     cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit},
@@ -43,6 +44,9 @@ pub struct HpConnection {
     outbound: control_io::Outbound,
     file_decoder: file_transfer::Decoder,
     file_messages: Vec<file_transfer::Message>,
+    clipboard: pasteboard::Reassembler,
+    /// Newest Mac pasteboard text not yet taken by the app.
+    remote_clipboard: Option<String>,
     pub width: u16,
     pub height: u16,
     pub video_socket: UdpSocket,
@@ -252,6 +256,8 @@ impl HpConnection {
             outbound: control_io::Outbound::default(),
             file_decoder: file_transfer::Decoder::default(),
             file_messages: Vec::new(),
+            clipboard: pasteboard::Reassembler::default(),
+            remote_clipboard: None,
             width,
             height,
             video_socket,
@@ -304,6 +310,10 @@ impl HpConnection {
             result.control_socket.send(&[0])?;
             std::thread::sleep(Duration::from_millis(20));
         }
+        // Ask the Mac to announce pasteboard changes so Mac → Windows copy
+        // works. Nothing is fetched until the Mac reports a change, so
+        // connecting never overwrites the Windows clipboard.
+        result.send(&pasteboard::ENABLE)?;
         Ok(result)
     }
     pub fn send_key(&mut self, down: bool, keysym: u32) -> Result<()> {
@@ -357,6 +367,10 @@ impl HpConnection {
     pub fn take_file_messages(&mut self) -> Vec<file_transfer::Message> {
         std::mem::take(&mut self.file_messages)
     }
+    /// Text the Mac put on its pasteboard since the last call, if any.
+    pub fn take_remote_clipboard(&mut self) -> Option<String> {
+        self.remote_clipboard.take()
+    }
     pub fn file_message_pending(&self) -> bool {
         self.file_decoder.is_pending()
     }
@@ -382,6 +396,29 @@ impl HpConnection {
         }
         let mut result = Vec::new();
         for body in record::drain_records(&mut self.records, &mut self.pending)? {
+            // A pasteboard message can span records; continuation records carry
+            // no type byte, so they must not reach the other decoders.
+            let body = if self.clipboard.in_progress()
+                || (!self.file_decoder.is_pending() && pasteboard::Reassembler::starts(&body))
+            {
+                let fed = self.clipboard.feed(&body);
+                if let Some(message) = fed.complete {
+                    // A malformed or non-text pasteboard is ignored; it must
+                    // never end the screen-sharing session.
+                    if let Ok(Some(text)) = pasteboard::decode_text(&message) {
+                        self.remote_clipboard = Some(text);
+                    }
+                }
+                match fed.rest {
+                    Some(rest) => rest,
+                    None => continue,
+                }
+            } else {
+                body
+            };
+            if pasteboard::is_changed_notice(&body) {
+                self.send(&pasteboard::FETCH)?;
+            }
             let (messages, other) = self.file_decoder.feed(&body)?;
             ensure!(
                 self.file_messages.len() + messages.len() <= 256,

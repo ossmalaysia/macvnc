@@ -39,8 +39,13 @@ pub enum Command {
 pub enum Event {
     Status(String),
     NetworkRtt(Option<Duration>),
-    Connected { width: u32, height: u32 },
+    Connected {
+        width: u32,
+        height: u32,
+    },
     Disconnected(String),
+    /// Text copied on the Mac, for the Windows clipboard.
+    RemoteClipboard(String),
 }
 pub struct Backend {
     pub commands: CommandSender,
@@ -292,6 +297,10 @@ fn run_session(
             }
         }
         connection.poll_control()?;
+        if let Some(text) = connection.take_remote_clipboard() {
+            let _ = events.send(Event::RemoteClipboard(text));
+            repaint();
+        }
         transfers.pump(&mut connection)?;
         report.layout_events = connection.layout_events;
         report.media_reoffers = connection.media_reoffers;

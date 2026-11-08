@@ -506,13 +506,19 @@ const _: () = assert!(PASTE_COMMANDS_PER_FRAME < backend::COMMAND_QUEUE_CAPACITY
 #[derive(Default)]
 struct ClipboardSync {
     remote_owns: bool,
+    /// The last text the Mac put on the Windows clipboard. Pasting it back
+    /// into the session uses the Mac's own pasteboard instead of re-typing it.
+    remote_text: Option<String>,
 }
 impl ClipboardSync {
     /// True when this event will be typed out, which requires the caller to
     /// release held modifiers first: typing while Command is latched on the Mac
     /// fires shortcuts (Command-S, Command-W, Command-Q) instead of entering text.
     fn will_type(&self, event: &egui::Event) -> bool {
-        matches!(event, egui::Event::Paste(_)) && !self.remote_owns
+        matches!(event, egui::Event::Paste(text) if !self.remote_owns && !self.is_mac_text(text))
+    }
+    fn is_mac_text(&self, text: &str) -> bool {
+        self.remote_text.as_deref() == Some(text)
     }
     fn commands(&mut self, event: egui::Event) -> Vec<Command> {
         match event {
@@ -527,7 +533,7 @@ impl ClipboardSync {
             egui::Event::Paste(text) => {
                 // Consume the flag unconditionally so a Mac-side copy latches it
                 // for exactly one paste.
-                if std::mem::take(&mut self.remote_owns) {
+                if std::mem::take(&mut self.remote_owns) || self.is_mac_text(&text) {
                     tap(b'v')
                 } else {
                     typed(&text)
@@ -626,6 +632,13 @@ impl eframe::App for App {
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
                 Event::Status(s) => self.status = s,
+                Event::RemoteClipboard(text) => {
+                    if self.connected {
+                        ctx.copy_text(text.clone());
+                        self.clipboard.remote_text = Some(text);
+                        self.status = "Copied from Mac · paste anywhere in Windows".into();
+                    }
+                }
                 Event::NetworkRtt(rtt) => {
                     if rtt != self.network_rtt {
                         self.rtt_changed = Instant::now();
@@ -1304,6 +1317,25 @@ mod tests {
         assert_eq!(clipboard_letter(&egui::Event::Copy), b'c');
         assert_eq!(clipboard_letter(&egui::Event::Cut), b'x');
         assert_eq!(clipboard_letter(&egui::Event::Paste("x".into())), b'v');
+    }
+    #[test]
+    fn pasting_text_copied_on_the_mac_uses_command_v_not_typing() {
+        let mut sync = ClipboardSync {
+            remote_text: Some("from mac".into()),
+            ..ClipboardSync::default()
+        };
+        let event = egui::Event::Paste("from mac".into());
+        assert!(!sync.will_type(&event), "no modifier release needed");
+        assert_eq!(
+            describe(&sync.commands(event)),
+            ["key:118:true", "key:118:false"]
+        );
+        // A different Windows clipboard is still typed in, every time.
+        let local = egui::Event::Paste("from windows".into());
+        assert!(sync.will_type(&local));
+        assert!(describe(&sync.commands(local)).contains(&"clipboard:from windows".to_string()));
+        // And the Mac text keeps mapping to ⌘V on later pastes.
+        assert!(!sync.will_type(&egui::Event::Paste("from mac".into())));
     }
     #[test]
     fn will_type_reports_when_modifiers_must_be_released_first() {
