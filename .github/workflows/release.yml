@@ -50,7 +50,7 @@ jobs:
           $files = @('macvnc-rust-windows-x64.zip') + @(Get-ChildItem dist/MacVNC-Setup-*win-x64.exe | Select-Object -ExpandProperty Name)
           $files | ForEach-Object { (Get-FileHash (Join-Path dist $_) -Algorithm SHA256).Hash.ToLower() + "  $_" } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-package
           path: |
