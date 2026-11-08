@@ -29,6 +29,17 @@ The 0.1.10 tag contains the implementation, but its publication was blocked by
 the repository's release-action policy. Subsequent compatible stable releases
 can be installed through the Updates window.
 
+## Releasing
+
+Same one-click model as EzyChat Lite. Merge a PR that bumps
+`rust/crates/macvnc-app/Cargo.toml` to the new version, then run **Actions →
+Release (approved) → Run workflow** on `main` with the version typed twice. It
+checks that `main` carries that version and the tag is new, creates the annotated
+tag `vX.Y.Z` through the API and starts **Native Rust release** on it. That run
+builds and tests on Windows, packages the installer, ZIP and `SHA256SUMS.txt`,
+then waits for approval in the `github-release` environment before publishing
+the release as Latest. Installed apps then see it on their next update check.
+
 ## Installer
 
 `scripts/build-installer.ps1` wraps the portable package in a per-user NSIS
