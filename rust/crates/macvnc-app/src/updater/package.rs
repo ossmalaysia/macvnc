@@ -230,7 +230,8 @@ pub fn extract(
     for index in 0..zip.len() {
         cancelled()?;
         let mut entry = zip.by_index(index)?;
-        let name = entry.name().trim_end_matches('/');
+        let raw_name = entry.name()?.into_owned();
+        let name = raw_name.trim_end_matches('/');
         if name == "macvnc-rust" && entry.is_dir() {
             continue;
         }
