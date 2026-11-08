@@ -29,6 +29,14 @@ ManifestDPIAware true
   !define OUTFILE "MacVNC-Setup-${VERSION}-win-x64.exe"
 !endif
 
+; Windows makensis does not expand a wildcard after a forward slash; Linux
+; makensis needs one. Only the File wildcard depends on it.
+!ifdef NSIS_WIN32_MAKENSIS
+  !define SEP "\"
+!else
+  !define SEP "/"
+!endif
+
 !define APP "MacVNC"
 !define EXE "macvnc-app.exe"
 !define PUBLISHER "AnchorSprint"
@@ -85,7 +93,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
   ; A previous version's bundled source tree is replaced, not merged.
   RMDir /r "$INSTDIR\source"
-  File /r "${SOURCE}/*.*"
+  File /r "${SOURCE}${SEP}*.*"
   WriteUninstaller "$INSTDIR\Uninstall ${APP}.exe"
 
   CreateDirectory "$SMPROGRAMS\${APP}"
