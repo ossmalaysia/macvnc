@@ -30,12 +30,19 @@ until this file changes. Promote anything that changes _how_ agents work into AG
 - A malformed or oversized optional message (clipboard) is skipped, never a session error; skip an
   oversized multi-record message byte-for-byte without buffering it.
 
+- Mid-session resize is the connect-time `0x1d` display configuration sent again (dynamic flag,
+  type 4, reserved 7); the Mac answers with a new layout and the existing re-offer path rebuilds
+  the stream. Debounce window drags (settle 0.5 s, ≥32 px, ≥2.5 s apart): each request restarts
+  the Mac's encoder.
+
 ## Build, CI and dependencies
 
 - CI's Rust/Clippy can be newer than the local toolchain (1.99 vs 1.97 flagged
   `chunks_exact_to_as_chunks`); prefer `as_chunks::<N>()` and expect new lints to appear only in CI.
 - Windows-only code (`#[cfg(windows)]`, FFI) is not compiled by Linux checks: run
   `cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings` (mingw-w64) before pushing.
+- The Linux synthetic UI check (`--smoke-ui` under `xvfb-run`) needs `libxkbcommon-x11-0`; without
+  it winit panics before the app starts — install it rather than reading that as a regression.
 - `cargo audit` failures come from `Cargo.lock`, so they fail on `main` too; fix them by upgrading
   (`zip` 4→9 changed `ZipFile::name()` to return `Result`), not by waiting.
 

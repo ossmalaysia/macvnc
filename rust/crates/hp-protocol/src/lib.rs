@@ -44,6 +44,8 @@ pub struct HpConnection {
     outbound: control_io::Outbound,
     file_decoder: file_transfer::Decoder,
     file_messages: Vec<file_transfer::Message>,
+    /// Frame rate advertised in display configuration requests.
+    fps: u16,
     clipboard: pasteboard::Reassembler,
     /// Newest Mac pasteboard text not yet taken by the app.
     remote_clipboard: Option<String>,
@@ -256,6 +258,7 @@ impl HpConnection {
             outbound: control_io::Outbound::default(),
             file_decoder: file_transfer::Decoder::default(),
             file_messages: Vec::new(),
+            fps: options.fps,
             clipboard: pasteboard::Reassembler::default(),
             remote_clipboard: None,
             width,
@@ -366,6 +369,20 @@ impl HpConnection {
     }
     pub fn take_file_messages(&mut self) -> Vec<file_transfer::Message> {
         std::mem::take(&mut self.file_messages)
+    }
+    /// Asks the Mac to resize its virtual display mid-session (dynamic
+    /// resolution). The same `0x1d` display configuration used at connect,
+    /// sent on the live connection with the dynamic-resolution flag, makes the
+    /// Mac re-render at the new size and report a new display layout; the
+    /// existing layout recovery then re-offers media and the decoder restarts
+    /// at the new geometry. No reconnect or re-authentication.
+    pub fn request_display_size(&mut self, width: u16, height: u16) -> Result<()> {
+        validate_dimensions(width, height)?;
+        ensure!(
+            width <= 3840 && height <= 2160,
+            "display request exceeds the Mac's 3840x2160 limit"
+        );
+        self.send(&offer::display_config(width, height, self.fps))
     }
     /// Text the Mac put on its pasteboard since the last call, if any.
     pub fn take_remote_clipboard(&mut self) -> Option<String> {

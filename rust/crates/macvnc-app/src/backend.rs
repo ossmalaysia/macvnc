@@ -32,9 +32,21 @@ impl Drop for ConnectOptions {
 pub enum Command {
     Connect(ConnectOptions),
     Disconnect,
-    Pointer { x: u16, y: u16, buttons: u8 },
-    Key { keysym: u32, down: bool },
+    Pointer {
+        x: u16,
+        y: u16,
+        buttons: u8,
+    },
+    Key {
+        keysym: u32,
+        down: bool,
+    },
     Clipboard(String),
+    /// Resize the Mac's virtual display to this many pixels (dynamic resolution).
+    Resize {
+        width: u16,
+        height: u16,
+    },
 }
 pub enum Event {
     Status(String),
@@ -291,6 +303,12 @@ fn run_session(
                 Ok(Command::Pointer { x, y, buttons }) => connection.send_pointer(buttons, x, y)?,
                 Ok(Command::Key { keysym, down }) => connection.send_key(down, keysym)?,
                 Ok(Command::Clipboard(text)) => connection.send_clipboard(&text)?,
+                Ok(Command::Resize { width, height }) => {
+                    connection.request_display_size(width, height)?;
+                    let _ = events.send(Event::Status(format!(
+                        "Resizing Mac display to {width} × {height}…"
+                    )));
+                }
                 Ok(Command::Connect(_)) => (),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return Ok(report),

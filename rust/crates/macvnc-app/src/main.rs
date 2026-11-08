@@ -2,6 +2,7 @@
 mod backend;
 mod input;
 mod profile;
+mod resize;
 mod transfer;
 mod transfer_ui;
 mod updater;
@@ -47,6 +48,9 @@ struct App {
     window_drag_anchor: [Option<egui::Pos2>; 2],
     clipboard: ClipboardSync,
     pending_paste: VecDeque<Command>,
+    /// Physical pixels available to the remote view, measured every frame.
+    view_px: [u32; 2],
+    resize: resize::Tracker,
     files: transfer_ui::Files,
     updates: updater::Updater,
 }
@@ -118,6 +122,8 @@ impl App {
             window_drag_anchor: [None; 2],
             clipboard: ClipboardSync::default(),
             pending_paste: VecDeque::new(),
+            view_px: [0, 0],
+            resize: resize::Tracker::default(),
             files: {
                 let mut files = transfer_ui::Files::default();
                 files.open = smoke;
@@ -190,13 +196,21 @@ impl App {
         self.size = [0, 0];
         self.connecting = true;
         self.status = "Connecting with High Performance…".into();
+        // Dynamic resolution starts the Mac display at the window's size;
+        // otherwise keep the fixed 1080p canvas.
+        let [width, height] = if self.profile.dynamic_resolution && self.view_px[0] > 0 {
+            self.resize.reset(self.view_px);
+            resize::target(self.view_px)
+        } else {
+            [1920, 1080]
+        };
         self.send(Command::Connect(ConnectOptions {
             host: self.profile.host.trim().into(),
             port,
             username: self.profile.username.clone(),
             password: self.profile.password.clone(),
-            width: 1920,
-            height: 1080,
+            width,
+            height,
             fps: 60,
         }));
         // Remember also preserves the masked form value for explicit reconnects.
@@ -628,6 +642,16 @@ impl eframe::App for App {
         // Runs before the UI so a paste keeps draining even if the pointer leaves
         // the remote view part-way through.
         self.drain_pending_paste(ctx);
+        // Dynamic resolution: the Mac display follows the window once its
+        // size settles. The resulting layout change rebuilds the video stream.
+        if self.connected && !self.cancelling && self.profile.dynamic_resolution {
+            if let Some([width, height]) = self.resize.poll(self.view_px, Instant::now()) {
+                self.send(Command::Resize { width, height });
+            }
+            if self.resize.waiting() {
+                ctx.request_repaint_after(resize::DEBOUNCE / 2);
+            }
+        }
         let mut latest = None;
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
@@ -814,6 +838,8 @@ impl eframe::App for App {
             self.connected || self.connecting,
         );
         egui::CentralPanel::default().show(ctx, |ui| {
+            let px = ui.available_size() * ctx.pixels_per_point();
+            self.view_px = [px.x.max(0.0) as u32, px.y.max(0.0) as u32];
             if let Some(texture) = &self.texture {
                 let avail = ui.available_size();
                 let native = egui::vec2(self.size[0] as f32, self.size[1] as f32);
@@ -915,6 +941,35 @@ impl eframe::App for App {
                                 ui.label(
                                     egui::RichText::new(
                                         "Use Ctrl → Control for Control-based Mac shortcuts; Ctrl → Command maps Windows Ctrl to ⌘.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Resolution");
+                                    egui::ComboBox::from_id_salt("resolution")
+                                        .selected_text(if self.profile.dynamic_resolution {
+                                            "Fit window"
+                                        } else {
+                                            "Fixed 1920 × 1080"
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.profile.dynamic_resolution,
+                                                true,
+                                                "Fit window",
+                                            );
+                                            ui.selectable_value(
+                                                &mut self.profile.dynamic_resolution,
+                                                false,
+                                                "Fixed 1920 × 1080",
+                                            );
+                                        });
+                                });
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Fit window resizes the Mac display to match this window, up to 3840 × 2160.",
                                     )
                                     .small()
                                     .weak(),
