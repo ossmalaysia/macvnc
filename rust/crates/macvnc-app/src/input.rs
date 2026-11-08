@@ -66,6 +66,14 @@ pub fn modifiers(m: Modifiers, native: bool, physical: Option<Physical>) -> Vec<
     }
     result
 }
+/// Mac-style symbols for the modifiers held on the remote, e.g. "⌃⌘".
+pub fn held_label(held: &[u32]) -> String {
+    [(CONTROL, '⌃'), (OPTION, '⌥'), (SHIFT, '⇧'), (COMMAND, '⌘')]
+        .iter()
+        .filter(|(keysym, _)| held.contains(keysym))
+        .map(|(_, symbol)| *symbol)
+        .collect()
+}
 /// Reads which side's Ctrl and whether a Windows key is down. `GetKeyState`
 /// reflects the UI thread's message queue, so it agrees with the key events
 /// egui has just delivered for this frame.
@@ -298,6 +306,11 @@ mod tests {
             modifiers(ctrl, false, Some(right_and_windows)),
             vec![CONTROL]
         );
+    }
+    #[test]
+    fn held_label_uses_mac_order() {
+        assert_eq!(held_label(&[COMMAND, SHIFT, CONTROL]), "⌃⇧⌘");
+        assert_eq!(held_label(&[]), "");
     }
     #[test]
     fn native_profile_sends_control_for_either_ctrl() {

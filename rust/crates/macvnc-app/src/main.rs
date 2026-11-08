@@ -726,6 +726,11 @@ impl eframe::App for App {
                     self.pending_paste.clear();
                     self.files.open = !self.files.open;
                 }
+                if self.connected && !self.modifiers.is_empty() {
+                    ui.label(input::held_label(&self.modifiers)).on_hover_text(
+                        "Modifier keys currently held on the Mac. Right Ctrl or the Windows key should show ⌃ (Control) in the Ctrl → Command profile.",
+                    );
+                }
                 ui.label(rtt_label(self.network_rtt, self.rtt_changed.elapsed()))
                 .on_hover_text("Network latency: the OS-estimated TCP round-trip time, read every second. It only updates when the Mac acknowledges input you send, so it is marked stale while you are idle; move the mouse to refresh it. Excludes video decoding and display delay. — means unavailable.");
                 if (self.connected || self.connecting)
