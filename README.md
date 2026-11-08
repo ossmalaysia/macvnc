@@ -1,4 +1,4 @@
-# MacVNC v0.1.11 — native Rust HP client
+# MacVNC v0.1.12 — native Rust HP client
 
 Developed by [AnchorSprint](https://anchorsprint.com).
 
@@ -28,19 +28,28 @@ currently restores the picture in the reported case.
 A language rewrite alone does not prove better FPS. Hardware HEVC acceleration is not currently enabled; the native
 software decoder uses slice threading for Apple's HEVC 4:4:4 stream.
 
-## Install without building (Windows x64)
+## Install (Windows x64)
 
-Download the latest **native Rust HP** package from [GitHub Releases](https://github.com/ossmalaysia/macvnc/releases/latest), extract the ZIP, and run `macvnc-app.exe`. Keep every DLL beside the executable. The package is portable and does not require Node, Rust, Electron, or an installer.
+Download **[MacVNC-Setup-win-x64.exe](https://github.com/ossmalaysia/macvnc/releases/latest/download/MacVNC-Setup-win-x64.exe)**
+(always the newest release) and run it. It installs for your Windows user only,
+into `%LOCALAPPDATA%\Programs\MacVNC`, with no administrator prompt, and adds
+Start menu and desktop shortcuts plus an uninstaller under Settings → Apps.
+Uninstalling keeps your saved connection.
 
-Releases are unsigned, so Windows SmartScreen may require explicit approval. Verify `SHA256SUMS.txt` before launching a downloaded package.
+Prefer no installer? Download `macvnc-rust-windows-x64.zip` from
+[GitHub Releases](https://github.com/ossmalaysia/macvnc/releases/latest), extract
+it and run `macvnc-app.exe` with every DLL beside it. Both forms update in-app.
+
+Releases are unsigned, so Windows SmartScreen may ask for approval (More info →
+Run anyway). `SHA256SUMS.txt` lists checksums for the installer and the ZIP.
 
 ## In-app updates (Windows x64)
 
-MacVNC checks GitHub for newer stable releases at startup and once a day while
-open. Click **Updates** to check manually; when a release is available, the
-toolbar shows its version. Review **What's new**, then click **Download and
-restart**. Download progress is shown while the app stays open. After verifying
-the checksum and package, MacVNC closes, installs the complete portable package
+MacVNC checks GitHub for newer stable releases at startup and every 12 hours
+while open. When one is available the toolbar shows a highlighted
+**⬆ Update · vX.Y.Z** button; click it to review **What's new**, then click
+**Download and restart**. Download progress is shown while the app stays open.
+After verifying the checksum and package, MacVNC closes, installs the update
 and restarts. Its current Mac session disconnects; reconnect explicitly afterward.
 
 Keep the app in a writable folder. Updates preserve saved connection profiles

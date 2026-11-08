@@ -1,5 +1,6 @@
 //! Public stable-release updates for the portable Windows x64 package.
 pub mod install;
+mod installed;
 mod package;
 mod ui;
 
@@ -21,6 +22,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Same cadence as EzyChat Lite: at startup, then every 12 hours while open.
+const CHECK_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 const API: &str = "https://api.github.com/repos/ossmalaysia/macvnc/releases/latest";
 #[derive(Clone)]
 pub enum State {
@@ -91,6 +94,7 @@ impl Updater {
             install_error,
         };
         if enabled {
+            installed::sync_version();
             updater.check();
         }
         updater
@@ -105,7 +109,7 @@ impl Updater {
         if self.enabled
             && self
                 .last_check
-                .is_some_and(|t| t.elapsed() >= Duration::from_secs(24 * 60 * 60))
+                .is_some_and(|t| t.elapsed() >= CHECK_INTERVAL)
             && !self.state().busy()
         {
             self.check();

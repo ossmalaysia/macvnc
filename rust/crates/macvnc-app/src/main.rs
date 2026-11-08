@@ -716,7 +716,7 @@ impl eframe::App for App {
                 );
                 ui.separator();
                 ui.label(format!("{} fps", self.presented.len()));
-                if ui.button(self.updates.button_label()).clicked() {
+                if ui.add(self.updates.button(ui)).clicked() {
                     self.release_input();
                     self.pending_paste.clear();
                     self.updates.open = !self.updates.open;

@@ -1,7 +1,7 @@
 # Native Windows updates
 
-The portable Windows x64 app checks the public GitHub latest-release API at
-startup and at most once every 24 hours while running. Checks and downloads run
+The Windows x64 app checks the public GitHub latest-release API at startup and
+every 12 hours while running. Checks and downloads run
 off the UI/session thread. The Updates window also supports manual checks,
 release notes, progress and cancellation. Development builds may check releases
 but installation requires an extracted portable package in a writable folder.
@@ -28,6 +28,27 @@ package metadata; users of earlier versions must download and extract it manuall
 The 0.1.10 tag contains the implementation, but its publication was blocked by
 the repository's release-action policy. Subsequent compatible stable releases
 can be installed through the Updates window.
+
+## Installer
+
+`scripts/build-installer.ps1` wraps the portable package in a per-user NSIS
+installer (`scripts/installer/macvnc.nsi`): `MacVNC-Setup-<version>-win-x64.exe`
+plus an identical `MacVNC-Setup-win-x64.exe` so
+`releases/latest/download/MacVNC-Setup-win-x64.exe` always serves the newest one.
+It installs into `%LOCALAPPDATA%\Programs\MacVNC` without elevation, so the
+installed folder holds the same files as the ZIP and stays writable: installed
+copies use the same verified in-place update below. On startup an installed copy
+refreshes `DisplayVersion` in its HKCU uninstall entry, only when the entry's
+`InstallLocation` is the running executable's folder. Running a newer installer
+over an existing install also upgrades it; it waits until MacVNC is closed. The
+uninstaller removes only files the package ships, shortcuts and the HKCU entry;
+saved profiles and unrelated files stay.
+
+Validated under 64-bit Wine with a synthetic package (`/DAMD64` build): silent
+install, files, shortcuts and uninstall registry entry; silent uninstall removing
+them while keeping an unrelated user file. Release builds use the standard x86
+NSIS stub on the Windows runner; first install on real Windows is still to be
+confirmed.
 
 ## Download and restart lifecycle
 

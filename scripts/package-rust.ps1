@@ -47,9 +47,11 @@ foreach ($crate in @('hp-protocol','hp-media','macvnc-app')) {
         }
     }
 }
-foreach ($script in @('build-rust.ps1','run-rust.ps1','package-rust.ps1')) {
+foreach ($script in @('build-rust.ps1','run-rust.ps1','package-rust.ps1','build-installer.ps1')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination "$source/scripts"
 }
+New-Item -ItemType Directory -Force "$source/scripts/installer" | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'installer/macvnc.nsi') -Destination "$source/scripts/installer"
 $cargoCommand = Get-Command cargo -ErrorAction SilentlyContinue
 $cargoPath = if ($cargoCommand) { $cargoCommand.Source } else { Join-Path $env:USERPROFILE '.cargo/bin/cargo.exe' }
 Push-Location $repo

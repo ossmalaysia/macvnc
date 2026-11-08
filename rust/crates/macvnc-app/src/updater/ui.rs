@@ -3,6 +3,17 @@ use eframe::egui;
 use std::time::Duration;
 
 impl Updater {
+    /// Toolbar button; filled with the accent colour while an update waits so
+    /// it is noticed without a pop-up interrupting a remote session.
+    pub fn button(&self, ui: &egui::Ui) -> egui::Button<'static> {
+        let label = self.button_label();
+        if matches!(self.state(), State::Available(_)) {
+            egui::Button::new(egui::RichText::new(format!("⬆ {label}")).color(egui::Color32::WHITE))
+                .fill(ui.visuals().selection.bg_fill)
+        } else {
+            egui::Button::new(label)
+        }
+    }
     pub fn button_label(&self) -> String {
         match self.state() {
             State::Available(r) => format!("Update · v{}", r.version),
@@ -123,7 +134,7 @@ impl Updater {
                     self.check();
                 }
                 ui.small("Updates come from ossmalaysia/macvnc on GitHub.");
-                ui.small("Checks run at startup and once a day while open.");
+                ui.small("Checks run at startup and every 12 hours while open.");
             });
         self.open = open;
     }
