@@ -104,9 +104,10 @@ legacy credentials again without deleting the older app's files.
 Click the remote picture to capture keyboard and pointer. F11 toggles fullscreen.
 Drag the Windows title bar, app name, or empty header area to move the client.
 Double-click the app header to maximize or restore the window.
-The keyboard supports Ctrl-as-Command and Native profiles. Left/right modifiers
-are combined by the current GUI input API, so the legacy right-Ctrl passthrough
-is not yet equivalent. Text clipboard transmission is supported. Experimental
+The keyboard supports Ctrl-as-Command and Native profiles. In Ctrl-as-Command
+(the default), left Ctrl sends Command and right Ctrl or the Windows key sends
+the Mac's Control key, so Control-C in Terminal is right Ctrl+C. In Native, Ctrl
+sends Control and the Windows key sends Command. Text clipboard transmission is supported. Experimental
 file transfer controls are available below; audio and hardware video decode are
 not implemented.
 

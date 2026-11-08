@@ -125,6 +125,9 @@ impl App {
             },
             updates: updater::Updater::new(cc.egui_ctx.clone(), smoke),
         };
+        // egui zooms its own UI on Ctrl +, - and 0 and swallows those keys.
+        // They belong to the Mac (Command/Control zoom), so turn that off.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         // Acknowledge only after eframe has created the native UI context.
         if let Some(stage) = finish_update {
             match updater::install::finish_restart(&stage) {
@@ -303,7 +306,8 @@ impl App {
             _ => None,
         });
         let modifiers = event_modifiers.unwrap_or(frame_modifiers);
-        let next = input::modifiers(modifiers, self.profile.profile == "native");
+        let native = self.profile.profile == "native";
+        let next = input::modifiers(modifiers, native, input::physical_modifiers());
         // A paste in flight spans several frames. Re-pressing Ctrl mid-paste would
         // latch Command on the Mac and turn the remaining characters into
         // shortcuts, so leave the modifier state alone until the queue drains.
@@ -418,6 +422,16 @@ impl App {
                             keysym,
                             down: false,
                         });
+                    }
+                }
+                event @ (egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))
+                    if !native && control_chord(&self.modifiers) =>
+                {
+                    // Right Ctrl or Win held without Command: the user means the
+                    // Mac's Control-C/X/V (for example interrupting a Terminal
+                    // job), not a clipboard action. Send the letter as-is.
+                    for command in tap(clipboard_letter(&event)) {
+                        self.send(command);
                     }
                 }
                 event @ (egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)) => {
@@ -565,6 +579,19 @@ fn rtt_label(rtt: Option<Duration>, unchanged_for: Duration) -> String {
     }
 }
 const RTT_STALE_AFTER: Duration = Duration::from_secs(5);
+/// True when the held remote modifiers are a Control chord rather than a
+/// Command shortcut, so egui's Copy/Cut/Paste must not be treated as clipboard.
+fn control_chord(modifiers: &[u32]) -> bool {
+    modifiers.contains(&input::CONTROL) && !modifiers.contains(&input::COMMAND)
+}
+/// The letter egui swallowed when it turned a shortcut into a clipboard event.
+fn clipboard_letter(event: &egui::Event) -> u8 {
+    match event {
+        egui::Event::Copy => b'c',
+        egui::Event::Cut => b'x',
+        _ => b'v',
+    }
+}
 fn tap(letter: u8) -> Vec<Command> {
     vec![
         Command::Key {
@@ -1261,6 +1288,17 @@ mod tests {
             ],
             "the following paste reverts to typing the Windows clipboard"
         );
+    }
+    #[test]
+    fn control_chord_only_without_command() {
+        assert!(control_chord(&[input::CONTROL]));
+        assert!(control_chord(&[input::SHIFT, input::CONTROL]));
+        assert!(!control_chord(&[input::COMMAND]));
+        assert!(!control_chord(&[input::COMMAND, input::CONTROL]));
+        assert!(!control_chord(&[]));
+        assert_eq!(clipboard_letter(&egui::Event::Copy), b'c');
+        assert_eq!(clipboard_letter(&egui::Event::Cut), b'x');
+        assert_eq!(clipboard_letter(&egui::Event::Paste("x".into())), b'v');
     }
     #[test]
     fn will_type_reports_when_modifiers_must_be_released_first() {
