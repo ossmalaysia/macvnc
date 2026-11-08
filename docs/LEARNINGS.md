@@ -29,7 +29,6 @@ until this file changes. Promote anything that changes _how_ agents work into AG
   `FlushDecompress::Sync`, not a read-to-end decoder that expects `StreamEnd`.
 - A malformed or oversized optional message (clipboard) is skipped, never a session error; skip an
   oversized multi-record message byte-for-byte without buffering it.
-
 - Mid-session resize is the connect-time `0x1d` display configuration sent again (dynamic flag,
   type 4, reserved 7); the Mac answers with a new layout and the existing re-offer path rebuilds
   the stream. Debounce window drags (settle 0.5 s, ≥32 px, ≥2.5 s apart): each request restarts
