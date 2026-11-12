@@ -22,6 +22,9 @@ until this file changes. Promote anything that changes _how_ agents work into AG
 
 ## Apple protocol
 
+- Configure both Windows HP UDP sockets before probing — early ICMP port-unreachable replies
+  can otherwise abort media reception before the Mac opens its listeners.
+
 - Mac → viewer clipboard: send `0x15` (cmd 1) once, fetch with an **8-byte** `0x0b` on a `0x14`
   status-2 notice (9 bytes desynchronises the Mac's parser), and reassemble `0x1f` across records —
   continuation records carry no type byte, so route them before the file/metadata decoders.

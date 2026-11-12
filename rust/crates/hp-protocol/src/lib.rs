@@ -7,6 +7,7 @@ mod network_stats;
 mod offer;
 pub mod pasteboard;
 pub mod record;
+mod udp;
 use aes::{
     cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit},
     Aes128,
@@ -150,6 +151,8 @@ impl HpConnection {
         socket2::SockRef::from(&control_socket).set_recv_buffer_size(1024 * 1024)?;
         video_socket.connect(SocketAddr::new(addr.ip(), 5901))?;
         control_socket.connect(SocketAddr::new(addr.ip(), 5900))?;
+        udp::configure_media_socket(&video_socket).context("configure HP video UDP socket")?;
+        udp::configure_media_socket(&control_socket).context("configure HP control UDP socket")?;
         video_socket.set_nonblocking(true)?;
         control_socket.set_nonblocking(true)?;
         video_socket.send(&[0])?;
